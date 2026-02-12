@@ -22,6 +22,13 @@
     :data-ext="getExtension(name).toLowerCase()"
     @contextmenu="contextMenu"
   >
+    <SyncCheckbox
+      v-if="syncEntry"
+      :selected="syncEntry.selected"
+      :childTotalCount="syncEntry.childTotalCount"
+      :childSelectedCount="syncEntry.childSelectedCount"
+      @toggle="onSyncToggle"
+    />
     <div>
       <img
         v-if="!readOnly && type === 'image' && isThumbsEnabled"
@@ -31,7 +38,10 @@
     </div>
 
     <div>
-      <p class="name">{{ name }}</p>
+      <p class="name">
+        {{ name }}
+        <SyncStatusBadge v-if="syncEntry" :status="syncEntry.status" />
+      </p>
 
       <p v-if="isDir" class="size" data-order="-1">&mdash;</p>
       <p v-else class="size" :data-order="humanSize()">{{ humanSize() }}</p>
@@ -47,6 +57,10 @@
 import { useAuthStore } from "@/stores/auth";
 import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
+import { useSyncStore } from "@/stores/sync";
+import SyncCheckbox from "@/components/sync/SyncCheckbox.vue";
+import SyncStatusBadge from "@/components/sync/SyncStatusBadge.vue";
+import type { SyncEntry } from "@/api/sync";
 
 import { enableThumbs } from "@/utils/constants";
 import { filesize } from "@/utils";
@@ -82,6 +96,17 @@ const props = defineProps<{
 const authStore = useAuthStore();
 const fileStore = useFileStore();
 const layoutStore = useLayoutStore();
+const syncStore = useSyncStore();
+
+const syncEntry = computed<SyncEntry | undefined>(() => {
+  return syncStore.entries.find((e) => e.name === props.name);
+});
+
+const onSyncToggle = () => {
+  if (syncEntry.value) {
+    syncStore.toggleEntry(syncEntry.value);
+  }
+};
 
 const singleClick = computed(
   () => !props.readOnly && authStore.user?.singleClick

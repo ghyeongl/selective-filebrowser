@@ -8,6 +8,7 @@ import (
 
 	"github.com/filebrowser/filebrowser/v2/settings"
 	"github.com/filebrowser/filebrowser/v2/storage"
+	"github.com/filebrowser/filebrowser/v2/sync"
 )
 
 type modifyRequest struct {
@@ -23,6 +24,7 @@ func NewHandler(
 	store *storage.Storage,
 	server *settings.Server,
 	assetsFs fs.FS,
+	syncHandlers *sync.Handlers,
 ) (http.Handler, error) {
 	server.Clean()
 
@@ -84,6 +86,16 @@ func NewHandler(
 	api.PathPrefix("/command").Handler(monkey(commandsHandler, "/api/command")).Methods("GET")
 	api.PathPrefix("/search").Handler(monkey(searchHandler, "/api/search")).Methods("GET")
 	api.PathPrefix("/subtitle").Handler(monkey(subtitleHandler, "/api/subtitle")).Methods("GET")
+
+	// Sync API routes
+	if syncHandlers != nil {
+		syncAPI := api.PathPrefix("/sync").Subrouter()
+		syncAPI.HandleFunc("/entries", syncHandlers.HandleListEntries).Methods("GET")
+		syncAPI.HandleFunc("/entry/{inode:[0-9]+}", syncHandlers.HandleGetEntry).Methods("GET")
+		syncAPI.HandleFunc("/select", syncHandlers.HandleSelect).Methods("POST")
+		syncAPI.HandleFunc("/deselect", syncHandlers.HandleDeselect).Methods("POST")
+		syncAPI.HandleFunc("/stats", syncHandlers.HandleStats).Methods("GET")
+	}
 
 	public := api.PathPrefix("/public").Subrouter()
 	public.PathPrefix("/dl").Handler(monkey(publicDlHandler, "/api/public/dl/")).Methods("GET")

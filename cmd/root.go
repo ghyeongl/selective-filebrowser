@@ -29,6 +29,7 @@ import (
 	"github.com/filebrowser/filebrowser/v2/img"
 	"github.com/filebrowser/filebrowser/v2/settings"
 	"github.com/filebrowser/filebrowser/v2/storage"
+	ssync "github.com/filebrowser/filebrowser/v2/sync"
 	"github.com/filebrowser/filebrowser/v2/users"
 )
 
@@ -111,6 +112,8 @@ func addServerFlags(flags *pflag.FlagSet) {
 	flags.Bool("disableExec", true, "disables Command Runner feature")
 	flags.Bool("disableTypeDetectionByHeader", false, "disables type detection by reading file headers")
 	flags.Bool("disableImageResolutionCalc", false, "disables image resolution calculation by reading image files")
+	flags.String("archivesPath", "", "path to Archives directory for selective sync")
+	flags.String("spacesPath", "", "path to Spaces directory for selective sync")
 }
 
 var rootCmd = &cobra.Command{
@@ -235,7 +238,26 @@ user created with the credentials from options "username" and "password".`,
 			panic(err)
 		}
 
-		handler, err := fbhttp.NewHandler(imageService, fileCache, uploadCache, st.Storage, server, assetsFs)
+		// Set up sync daemon if paths are configured
+		var syncHandlers *ssync.Handlers
+		if server.ArchivesPath != "" && server.SpacesPath != "" {
+			fbDBPath, _ := filepath.Abs(v.GetString("database"))
+			syncDB, dbErr := ssync.OpenDB(fbDBPath)
+			if dbErr != nil {
+				return fmt.Errorf("open sync db: %w", dbErr)
+			}
+			defer syncDB.Close()
+
+			syncStore := ssync.NewStore(syncDB)
+			syncDaemon := ssync.NewDaemon(syncStore, server.ArchivesPath, server.SpacesPath)
+			syncHandlers = ssync.NewHandlers(syncStore, syncDaemon, server.ArchivesPath, server.SpacesPath)
+
+			syncCtx, syncCancel := context.WithCancel(context.Background())
+			defer syncCancel()
+			go syncDaemon.Run(syncCtx)
+		}
+
+		handler, err := fbhttp.NewHandler(imageService, fileCache, uploadCache, st.Storage, server, assetsFs, syncHandlers)
 		if err != nil {
 			return err
 		}
@@ -353,6 +375,14 @@ func getServerSettings(v *viper.Viper, st *storage.Storage) (*settings.Server, e
 		server.EnableExec = !v.GetBool("disableExec")
 	}
 
+	if v.IsSet("archivesPath") {
+		server.ArchivesPath = v.GetString("archivesPath")
+	}
+
+	if v.IsSet("spacesPath") {
+		server.SpacesPath = v.GetString("spacesPath")
+	}
+
 	if isAddrSet && isSocketSet {
 		return nil, errors.New("--socket flag cannot be used with --address, --port, --key nor --cert")
 	}
@@ -459,6 +489,8 @@ func quickSetup(v *viper.Viper, s *storage.Storage) error {
 		EnableExec:            !v.GetBool("disableExec"),
 		TypeDetectionByHeader: !v.GetBool("disableTypeDetectionByHeader"),
 		ImageResolutionCal:    !v.GetBool("disableImageResolutionCalc"),
+		ArchivesPath:          v.GetString("archivesPath"),
+		SpacesPath:            v.GetString("spacesPath"),
 	}
 
 	err = s.Settings.SaveServer(ser)

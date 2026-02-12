@@ -85,6 +85,8 @@
       </router-link>
     </template>
 
+    <SpacesUsageBar v-if="isFiles" />
+
     <div
       class="credits"
       v-if="isFiles && !disableUsedPercentage"
@@ -134,6 +136,7 @@ import {
 } from "@/utils/constants";
 import { files as api } from "@/api";
 import ProgressBar from "@/components/ProgressBar.vue";
+import SpacesUsageBar from "@/components/sync/SpacesUsageBar.vue";
 import prettyBytes from "pretty-bytes";
 
 const USAGE_DEFAULT = { used: "0 B", total: "0 B", usedPercentage: 0 };
@@ -146,6 +149,7 @@ export default {
   },
   components: {
     ProgressBar,
+    SpacesUsageBar,
   },
   inject: ["$showError"],
   computed: {
