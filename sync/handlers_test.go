@@ -87,14 +87,20 @@ func TestHandleListEntries_WithParentIno(t *testing.T) {
 }
 
 func TestHandleSelect(t *testing.T) {
-	h, store, _, _ := setupHandlersEnv(t)
+	h, store, archivesRoot, _ := setupHandlersEnv(t)
+
+	// Create real file so pipeline can find it
+	filePath := filepath.Join(archivesRoot, "file.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("hello"), 0644))
+	aMtime, _, aIno, _ := statFile(filePath)
+	require.NotNil(t, aIno)
 
 	require.NoError(t, store.UpsertEntry(Entry{
-		Inode: 100, Name: "file.txt", Type: "text",
-		Size: ptr(int64(5)), Mtime: 1000, Selected: false,
+		Inode: *aIno, Name: "file.txt", Type: "text",
+		Size: ptr(int64(5)), Mtime: *aMtime, Selected: false,
 	}))
 
-	body, _ := json.Marshal(SelectRequest{Inodes: []uint64{100}})
+	body, _ := json.Marshal(SelectRequest{Inodes: []uint64{*aIno}})
 	req := httptest.NewRequest("POST", "/api/sync/select", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleSelect(w, req)
@@ -102,28 +108,42 @@ func TestHandleSelect(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	// Verify entry is now selected
-	e, err := store.GetEntry(100)
+	e, err := store.GetEntry(*aIno)
 	require.NoError(t, err)
+	require.NotNil(t, e)
 	assert.True(t, e.Selected)
 }
 
 func TestHandleDeselect(t *testing.T) {
-	h, store, _, _ := setupHandlersEnv(t)
+	h, store, archivesRoot, spacesRoot := setupHandlersEnv(t)
+
+	// Create real file in both Archives and Spaces so pipeline can find it
+	filePath := filepath.Join(archivesRoot, "file.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("hello"), 0644))
+	aMtime, _, aIno, _ := statFile(filePath)
+	require.NotNil(t, aIno)
+
+	spacesFile := filepath.Join(spacesRoot, "file.txt")
+	require.NoError(t, os.WriteFile(spacesFile, []byte("hello"), 0644))
 
 	require.NoError(t, store.UpsertEntry(Entry{
-		Inode: 100, Name: "file.txt", Type: "text",
-		Size: ptr(int64(5)), Mtime: 1000, Selected: true,
+		Inode: *aIno, Name: "file.txt", Type: "text",
+		Size: ptr(int64(5)), Mtime: *aMtime, Selected: true,
+	}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{
+		EntryIno: *aIno, SyncedMtime: *aMtime, CheckedAt: *aMtime,
 	}))
 
-	body, _ := json.Marshal(SelectRequest{Inodes: []uint64{100}})
+	body, _ := json.Marshal(SelectRequest{Inodes: []uint64{*aIno}})
 	req := httptest.NewRequest("POST", "/api/sync/deselect", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleDeselect(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	e, err := store.GetEntry(100)
+	e, err := store.GetEntry(*aIno)
 	require.NoError(t, err)
+	require.NotNil(t, e)
 	assert.False(t, e.Selected)
 }
 
