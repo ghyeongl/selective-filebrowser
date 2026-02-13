@@ -41,7 +41,7 @@ func TestOpenDB_CreatesSchema(t *testing.T) {
 	var version string
 	err = db.QueryRow("SELECT value FROM meta WHERE key = 'schema_version'").Scan(&version)
 	require.NoError(t, err)
-	assert.Equal(t, "2", version)
+	assert.Equal(t, "3", version)
 }
 
 func TestOpenDB_Idempotent(t *testing.T) {

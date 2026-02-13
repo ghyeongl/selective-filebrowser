@@ -9,7 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schema = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 
 CREATE TABLE IF NOT EXISTS spaces_view (
-    entry_ino    INTEGER PRIMARY KEY REFERENCES entries(inode),
+    entry_ino    INTEGER PRIMARY KEY REFERENCES entries(inode) ON UPDATE CASCADE ON DELETE CASCADE,
     synced_mtime INTEGER NOT NULL,
     checked_at   INTEGER NOT NULL
 );
@@ -98,6 +98,12 @@ func migrate(db *sql.DB) error {
 			}
 			l.Info("migrated v1→v2")
 		}
+		if version < 3 {
+			if err := migrateV2toV3(db); err != nil {
+				return fmt.Errorf("migrate v2→v3: %w", err)
+			}
+			l.Info("migrated v2→v3")
+		}
 	} else {
 		l.Debug("schema up to date", slog.Int("version", version))
 	}
@@ -155,6 +161,41 @@ func migrateV1toV2(db *sql.DB) error {
 		`ALTER TABLE spaces_view_new RENAME TO spaces_view`,
 
 		`UPDATE meta SET value = '2' WHERE key = 'schema_version'`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", stmt[:40], err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func migrateV2toV3(db *sql.DB) error {
+	// Add ON UPDATE CASCADE ON DELETE CASCADE to spaces_view FK.
+	// SQLite can't ALTER FK constraints, so we recreate the table.
+	if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable FK: %w", err)
+	}
+	defer db.Exec("PRAGMA foreign_keys = ON") //nolint:errcheck
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmts := []string{
+		`CREATE TABLE spaces_view_new (
+			entry_ino    INTEGER PRIMARY KEY REFERENCES entries(inode) ON UPDATE CASCADE ON DELETE CASCADE,
+			synced_mtime INTEGER NOT NULL,
+			checked_at   INTEGER NOT NULL
+		)`,
+		`INSERT INTO spaces_view_new SELECT * FROM spaces_view`,
+		`DROP TABLE spaces_view`,
+		`ALTER TABLE spaces_view_new RENAME TO spaces_view`,
+		`UPDATE meta SET value = '3' WHERE key = 'schema_version'`,
 	}
 
 	for _, stmt := range stmts {

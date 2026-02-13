@@ -95,7 +95,54 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 		l.Debug("seed insert file", "path", pe.relPath, "inode", pe.stat.Inode, "type", fileType, "selected", inSpaces)
 	}
 
-	// Phase 2: Handle Spaces-only files (scenario #3) — SafeCopy S→A + INSERT
+	// Debug: log match/miss stats and sample misses to diagnose path format issues
+	var matchCount, missCount int
+	for relPath := range spacesFiles {
+		if _, ok := archiveFiles[relPath]; ok {
+			matchCount++
+		} else {
+			missCount++
+			if missCount <= 5 {
+				l.Warn("spaces-only sample path", "relPath", relPath, "len", len(relPath))
+			}
+		}
+	}
+	l.Info("seed phase 2 match stats", "match", matchCount, "miss", missCount, "archiveMapSize", len(archiveFiles), "spacesMapSize", len(spacesFiles))
+
+	// Debug: log sample archive paths for comparison with spaces paths
+	sampleCount := 0
+	for relPath := range archiveFiles {
+		if sampleCount >= 5 {
+			break
+		}
+		l.Warn("archive sample path", "relPath", relPath, "len", len(relPath))
+		sampleCount++
+	}
+
+	// Phase 2: Create spaces_view for entries that exist in BOTH Archives and Spaces.
+	// This runs BEFORE Spaces-only processing so that already-synced files are
+	// immediately visible as "synced" to the pipeline worker.
+	l.Info("seed phase 2: spaces_view")
+	now := time.Now().UnixNano()
+	var svCount int
+	for relPath, spStat := range spacesFiles {
+		archStat, inArchive := archiveFiles[relPath]
+		if !inArchive {
+			continue
+		}
+		if err := store.UpsertSpacesView(SpacesView{
+			EntryIno:    archStat.Inode,
+			SyncedMtime: spStat.Mtime,
+			CheckedAt:   now,
+		}); err != nil {
+			return fmt.Errorf("insert spaces_view for %s: %w", relPath, err)
+		}
+		svCount++
+		l.Debug("seed spaces_view created", "path", relPath, "inode", archStat.Inode)
+	}
+	l.Info("seed phase 2 complete", "spacesViewCount", svCount)
+
+	// Phase 3: Handle Spaces-only files (scenario #3) — SafeCopy S→A + INSERT + spaces_view
 	var spacesOnlyDirs, spacesOnlyFiles []pathEntry
 	for relPath, stat := range spacesFiles {
 		if _, inArchive := archiveFiles[relPath]; !inArchive {
@@ -108,7 +155,7 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 	}
 
 	if len(spacesOnlyDirs)+len(spacesOnlyFiles) > 0 {
-		l.Info("seed phase 2: spaces-only", "dirs", len(spacesOnlyDirs), "files", len(spacesOnlyFiles))
+		l.Info("seed phase 3: spaces-only", "dirs", len(spacesOnlyDirs), "files", len(spacesOnlyFiles))
 
 		// Dirs first (shallow → deep)
 		sortByDepth(spacesOnlyDirs)
@@ -117,7 +164,6 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 			if err := os.MkdirAll(archDir, 0755); err != nil {
 				return fmt.Errorf("mkdir archives %s: %w", pe.relPath, err)
 			}
-			// stat the newly created Archives dir for its inode
 			aMtime, _, aInode, _ := statFile(archDir)
 			if aInode == nil {
 				return fmt.Errorf("stat archives dir %s: inode unavailable", pe.relPath)
@@ -136,10 +182,17 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 			}); err != nil {
 				return fmt.Errorf("insert spaces-only dir %s: %w", pe.relPath, err)
 			}
+			if err := store.UpsertSpacesView(SpacesView{
+				EntryIno:    *aInode,
+				SyncedMtime: pe.stat.Mtime,
+				CheckedAt:   now,
+			}); err != nil {
+				return fmt.Errorf("insert spaces_view for spaces-only dir %s: %w", pe.relPath, err)
+			}
 			l.Debug("seed spaces-only dir", "path", pe.relPath, "inode", *aInode)
 		}
 
-		// Files: SafeCopy S→A then INSERT
+		// Files: SafeCopy S→A then INSERT entry + spaces_view
 		for _, pe := range spacesOnlyFiles {
 			src := filepath.Join(spacesPath, pe.relPath)
 			dst := filepath.Join(archivesPath, pe.relPath)
@@ -168,35 +221,15 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 			}); err != nil {
 				return fmt.Errorf("insert spaces-only file %s: %w", pe.relPath, err)
 			}
-			l.Debug("seed spaces-only file registered", "path", pe.relPath, "inode", *aInode)
-
-			// Update archiveFiles map so spaces_view phase can find the inode
-			archiveFiles[pe.relPath] = FileStat{
-				Inode: *aInode,
-				Name:  pe.stat.Name,
-				Size:  size,
-				Mtime: *aMtime,
-				IsDir: false,
+			if err := store.UpsertSpacesView(SpacesView{
+				EntryIno:    *aInode,
+				SyncedMtime: *aMtime,
+				CheckedAt:   now,
+			}); err != nil {
+				return fmt.Errorf("insert spaces_view for spaces-only file %s: %w", pe.relPath, err)
 			}
+			l.Debug("seed spaces-only file registered", "path", pe.relPath, "inode", *aInode)
 		}
-	}
-
-	// Phase 3: Create spaces_view for entries that exist in Spaces
-	l.Debug("seed phase 3: spaces_view", "count", len(spacesFiles))
-	now := time.Now().UnixNano()
-	for relPath, spStat := range spacesFiles {
-		archStat, inArchive := archiveFiles[relPath]
-		if !inArchive {
-			continue
-		}
-		if err := store.UpsertSpacesView(SpacesView{
-			EntryIno:    archStat.Inode,
-			SyncedMtime: spStat.Mtime,
-			CheckedAt:   now,
-		}); err != nil {
-			return fmt.Errorf("insert spaces_view for %s: %w", relPath, err)
-		}
-		l.Debug("seed spaces_view created", "path", relPath, "inode", archStat.Inode)
 	}
 
 	l.Info("seed complete", "archiveEntries", len(archiveFiles), "spacesEntries", len(spacesFiles), "durationMs", time.Since(start).Milliseconds())
