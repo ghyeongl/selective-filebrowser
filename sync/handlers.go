@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -37,18 +36,15 @@ type Handlers struct {
 	daemon       *Daemon
 	archivesRoot string
 	spacesRoot   string
-	trashRoot    string
 }
 
 // NewHandlers creates the sync HTTP handlers.
 func NewHandlers(store *Store, daemon *Daemon, archivesRoot, spacesRoot string) *Handlers {
-	trashRoot := filepath.Join(filepath.Dir(spacesRoot), ".trash")
 	return &Handlers{
 		store:        store,
 		daemon:       daemon,
 		archivesRoot: archivesRoot,
 		spacesRoot:   spacesRoot,
-		trashRoot:    trashRoot,
 	}
 }
 
@@ -59,7 +55,7 @@ func (h *Handlers) HandleListEntries(w http.ResponseWriter, r *http.Request) {
 	piParam := r.URL.Query().Get("parent_ino")
 	l.Info("HTTP list entries", "method", r.Method, "path", pathParam, "parentIno", piParam)
 
-	var parentIno *uint64
+	var parentIno uint64 // 0 = root
 	if pathParam != "" {
 		if pathParam != "/" {
 			ino, err := h.resolvePathToIno(pathParam)
@@ -77,7 +73,7 @@ func (h *Handlers) HandleListEntries(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid parent_ino", http.StatusBadRequest)
 			return
 		}
-		parentIno = &pi
+		parentIno = pi
 	}
 
 	children, err := h.store.ListChildren(parentIno)
@@ -134,29 +130,30 @@ func (h *Handlers) HandleListEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolvePathToIno walks down the entries tree to find the inode for a given path.
-func (h *Handlers) resolvePathToIno(path string) (*uint64, error) {
+// Returns 0 for root.
+func (h *Handlers) resolvePathToIno(path string) (uint64, error) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	var parentIno *uint64
+	var parentIno uint64
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		entry, err := h.store.GetEntryByPath(parentIno, part)
 		if err != nil || entry == nil {
-			return nil, err
+			return 0, err
 		}
-		ino := entry.Inode
-		parentIno = &ino
+		parentIno = entry.Inode
 	}
 	return parentIno, nil
 }
 
 // resolveRelPathFromIno builds the relative path from root for a given inode.
-func (h *Handlers) resolveRelPathFromIno(ino *uint64) string {
-	if ino == nil {
+// Returns "" for root (parentIno=0).
+func (h *Handlers) resolveRelPathFromIno(ino uint64) string {
+	if ino == 0 {
 		return ""
 	}
-	entry, err := h.store.GetEntry(*ino)
+	entry, err := h.store.GetEntry(ino)
 	if err != nil || entry == nil {
 		return ""
 	}
@@ -218,8 +215,8 @@ func (h *Handlers) HandleSelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run pipeline synchronously for each inode
-	h.runPipelineForInodes(r.Context(), req.Inodes)
+	// Push to eval queue — daemon worker will run pipeline
+	h.pushInodesToQueue(req.Inodes)
 
 	l.Info("HTTP select complete", "count", len(req.Inodes))
 	w.Header().Set("Content-Type", "application/json")
@@ -244,8 +241,8 @@ func (h *Handlers) HandleDeselect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run pipeline synchronously for each inode
-	h.runPipelineForInodes(r.Context(), req.Inodes)
+	// Push to eval queue — daemon worker will run pipeline
+	h.pushInodesToQueue(req.Inodes)
 
 	l.Info("HTTP deselect complete", "count", len(req.Inodes))
 	w.Header().Set("Content-Type", "application/json")
@@ -287,9 +284,9 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runPipelineForInodes resolves inodes to relative paths and runs the
-// sync pipeline synchronously for each one.
-func (h *Handlers) runPipelineForInodes(ctx context.Context, inodes []uint64) {
+// pushInodesToQueue resolves inodes to relative paths and pushes them
+// to the eval queue for the daemon worker to process.
+func (h *Handlers) pushInodesToQueue(inodes []uint64) {
 	l := sub("handlers")
 	for _, ino := range inodes {
 		entry, err := h.store.GetEntry(ino)
@@ -301,13 +298,11 @@ func (h *Handlers) runPipelineForInodes(ctx context.Context, inodes []uint64) {
 			continue
 		}
 
-		if err := RunPipeline(ctx, relPath, h.store, h.archivesRoot, h.spacesRoot, h.trashRoot, nil); err != nil {
-			l.Error("pipeline error", "path", relPath, "err", err)
-		}
+		h.daemon.Queue().Push(relPath)
+		l.Debug("queued for eval", "path", relPath, "inode", ino)
 
-		// For directories, also run pipeline on children
 		if entry.Type == "dir" {
-			h.runPipelineForChildren(ctx, ino, relPath)
+			h.pushChildrenToQueue(ino, relPath)
 		}
 	}
 }
@@ -322,10 +317,10 @@ func (h *Handlers) resolveRelPath(entry *Entry) string {
 	current := entry
 	for current != nil {
 		parts = append([]string{current.Name}, parts...)
-		if current.ParentIno == nil {
+		if current.ParentIno == 0 {
 			break
 		}
-		parent, err := h.store.GetEntry(*current.ParentIno)
+		parent, err := h.store.GetEntry(current.ParentIno)
 		if err != nil || parent == nil {
 			break
 		}
@@ -335,20 +330,16 @@ func (h *Handlers) resolveRelPath(entry *Entry) string {
 	return strings.Join(parts, "/")
 }
 
-func (h *Handlers) runPipelineForChildren(ctx context.Context, parentIno uint64, parentPath string) {
-	l := sub("handlers")
-	children, err := h.store.ListChildren(&parentIno)
+func (h *Handlers) pushChildrenToQueue(parentIno uint64, parentPath string) {
+	children, err := h.store.ListChildren(parentIno)
 	if err != nil {
-		l.Error("list children error", "parentIno", parentIno, "err", err)
 		return
 	}
 	for _, child := range children {
 		childPath := parentPath + "/" + child.Name
-		if err := RunPipeline(ctx, childPath, h.store, h.archivesRoot, h.spacesRoot, h.trashRoot, nil); err != nil {
-			l.Error("pipeline error", "path", childPath, "err", err)
-		}
+		h.daemon.Queue().Push(childPath)
 		if child.Type == "dir" {
-			h.runPipelineForChildren(ctx, child.Inode, childPath)
+			h.pushChildrenToQueue(child.Inode, childPath)
 		}
 	}
 }

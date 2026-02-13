@@ -431,7 +431,7 @@ func p4(store *Store, entry *Entry, sv *SpacesView, relPath, spacesPath string, 
 // It walks the path components to find the entry by parent_ino+name.
 func lookupDB(store *Store, archivesRoot, relPath string) (*Entry, *SpacesView, error) {
 	parts := splitPath(relPath)
-	var parentIno *uint64
+	var parentIno uint64
 
 	var entry *Entry
 	for _, part := range parts {
@@ -446,8 +446,7 @@ func lookupDB(store *Store, archivesRoot, relPath string) (*Entry, *SpacesView, 
 			return nil, nil, nil // not in DB
 		}
 		entry = e
-		ino := e.Inode
-		parentIno = &ino
+		parentIno = e.Inode
 	}
 
 	if entry == nil {
@@ -466,25 +465,24 @@ func lookupDB(store *Store, archivesRoot, relPath string) (*Entry, *SpacesView, 
 }
 
 // resolveParentInoFromDB walks the parent path components to find
-// the parent's inode in the DB.
-func resolveParentInoFromDB(store *Store, relPath string) (*uint64, error) {
+// the parent's inode in the DB. Returns 0 for root-level entries.
+func resolveParentInoFromDB(store *Store, relPath string) (uint64, error) {
 	dir := filepath.Dir(relPath)
 	if dir == "." || dir == "" {
-		return nil, nil
+		return 0, nil // root level → virtual root
 	}
 
 	parts := splitPath(dir)
-	var parentIno *uint64
+	var parentIno uint64
 	for _, part := range parts {
 		e, err := store.GetEntryByPath(parentIno, part)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		if e == nil {
-			return nil, fmt.Errorf("parent path component %q not found in DB", part)
+			return 0, fmt.Errorf("parent path component %q not found in DB", part)
 		}
-		ino := e.Inode
-		parentIno = &ino
+		parentIno = e.Inode
 	}
 	return parentIno, nil
 }

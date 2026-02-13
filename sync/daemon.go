@@ -101,12 +101,12 @@ func (d *Daemon) fullReconcile() {
 	l := sub("daemon")
 	l.Info("full reconcile starting")
 
-	d.reconcileChildren(nil, "")
+	d.reconcileChildren(0, "")
 
 	l.Info("full reconcile complete", "queued", d.queue.Len())
 }
 
-func (d *Daemon) reconcileChildren(parentIno *uint64, parentPath string) {
+func (d *Daemon) reconcileChildren(parentIno uint64, parentPath string) {
 	l := sub("daemon")
 	children, err := d.store.ListChildren(parentIno)
 	if err != nil {
@@ -125,8 +125,7 @@ func (d *Daemon) reconcileChildren(parentIno *uint64, parentPath string) {
 		l.Debug("reconcile queued", "path", relPath, "inode", child.Inode, "type", child.Type)
 
 		if child.Type == "dir" {
-			ino := child.Inode
-			d.reconcileChildren(&ino, relPath)
+			d.reconcileChildren(child.Inode, relPath)
 		}
 	}
 }

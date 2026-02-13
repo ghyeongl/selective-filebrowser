@@ -16,8 +16,8 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// UpsertEntry inserts or updates an entry. On conflict (same parent_ino + name),
-// the existing row is updated with the new inode, type, size, mtime.
+// UpsertEntry inserts or updates an entry keyed by path (parent_ino + name).
+// Handles rm+touch: same path, new inode → ON CONFLICT updates inode.
 func (s *Store) UpsertEntry(e Entry) error {
 	l := sub("store")
 	l.Debug("UpsertEntry", "inode", e.Inode, "parentIno", e.ParentIno, "name", e.Name, "type", e.Type, "selected", e.Selected)
@@ -82,20 +82,13 @@ func (s *Store) GetEntry(inode uint64) (*Entry, error) {
 }
 
 // GetEntryByPath retrieves an entry by parent inode and name.
-func (s *Store) GetEntryByPath(parentIno *uint64, name string) (*Entry, error) {
+// Use parentIno=0 for root-level entries.
+func (s *Store) GetEntryByPath(parentIno uint64, name string) (*Entry, error) {
 	e := &Entry{}
-	var err error
-	if parentIno == nil {
-		err = s.db.QueryRow(`
-			SELECT inode, parent_ino, name, type, size, mtime, selected
-			FROM entries WHERE parent_ino IS NULL AND name = ?
-		`, name).Scan(&e.Inode, &e.ParentIno, &e.Name, &e.Type, &e.Size, &e.Mtime, &e.Selected)
-	} else {
-		err = s.db.QueryRow(`
-			SELECT inode, parent_ino, name, type, size, mtime, selected
-			FROM entries WHERE parent_ino = ? AND name = ?
-		`, *parentIno, name).Scan(&e.Inode, &e.ParentIno, &e.Name, &e.Type, &e.Size, &e.Mtime, &e.Selected)
-	}
+	err := s.db.QueryRow(`
+		SELECT inode, parent_ino, name, type, size, mtime, selected
+		FROM entries WHERE parent_ino = ? AND name = ?
+	`, parentIno, name).Scan(&e.Inode, &e.ParentIno, &e.Name, &e.Type, &e.Size, &e.Mtime, &e.Selected)
 	if err == sql.ErrNoRows {
 		if logEnabled(slog.LevelDebug) {
 			sub("store").Debug("GetEntryByPath", "parentIno", parentIno, "name", name, "found", false)
@@ -122,23 +115,13 @@ func (s *Store) DeleteEntry(inode uint64) error {
 }
 
 // ListChildren returns all direct children of the given parent inode.
-// Pass nil for root-level entries.
-func (s *Store) ListChildren(parentIno *uint64) ([]Entry, error) {
-	var rows *sql.Rows
-	var err error
-	if parentIno == nil {
-		rows, err = s.db.Query(`
-			SELECT inode, parent_ino, name, type, size, mtime, selected
-			FROM entries WHERE parent_ino IS NULL
-			ORDER BY type = 'dir' DESC, name ASC
-		`)
-	} else {
-		rows, err = s.db.Query(`
-			SELECT inode, parent_ino, name, type, size, mtime, selected
-			FROM entries WHERE parent_ino = ?
-			ORDER BY type = 'dir' DESC, name ASC
-		`, *parentIno)
-	}
+// Use parentIno=0 for root-level entries.
+func (s *Store) ListChildren(parentIno uint64) ([]Entry, error) {
+	rows, err := s.db.Query(`
+		SELECT inode, parent_ino, name, type, size, mtime, selected
+		FROM entries WHERE parent_ino = ?
+		ORDER BY type = 'dir' DESC, name ASC
+	`, parentIno)
 	if err != nil {
 		return nil, fmt.Errorf("list children: %w", err)
 	}

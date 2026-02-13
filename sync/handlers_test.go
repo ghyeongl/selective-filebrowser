@@ -22,7 +22,8 @@ func setupHandlersEnv(t *testing.T) (*Handlers, *Store, string, string) {
 	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
 
 	store := setupTestDB(t)
-	handlers := NewHandlers(store, nil, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 	return handlers, store, archivesRoot, spacesRoot
 }
 
@@ -70,7 +71,7 @@ func TestHandleListEntries_WithParentIno(t *testing.T) {
 		Inode: 1, Name: "docs", Type: "dir", Mtime: 1000,
 	}))
 	require.NoError(t, store.UpsertEntry(Entry{
-		Inode: 2, ParentIno: ptr(uint64(1)), Name: "readme.txt",
+		Inode: 2, ParentIno: 1, Name: "readme.txt",
 		Type: "text", Size: ptr(int64(10)), Mtime: 1000,
 	}))
 
@@ -167,8 +168,8 @@ func TestHandleStats(t *testing.T) {
 
 	var resp SyncStatsResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, int64(300), resp.SelectedSize)
-	assert.Greater(t, resp.SpacesTotal, int64(0))
+	assert.Equal(t, int64(300), resp.SpacesSize)
+	assert.Greater(t, resp.DiskTotal, int64(0))
 }
 
 func TestHandleGetEntry(t *testing.T) {

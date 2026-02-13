@@ -9,7 +9,7 @@ var nowFunc = time.Now
 // The inode is from the Archives filesystem only.
 type Entry struct {
 	Inode     uint64  `json:"inode"`
-	ParentIno *uint64 `json:"parentIno"`
+	ParentIno uint64  `json:"parentIno"`
 	Name      string  `json:"name"`
 	Type      string  `json:"type"` // "dir"|"video"|"audio"|"image"|"pdf"|"text"|"blob"
 	Size      *int64  `json:"size"` // nil for directories

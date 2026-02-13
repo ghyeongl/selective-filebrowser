@@ -40,7 +40,7 @@ func TestDaemon_SeedAndReconcile(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let it shut down
 
 	// Verify entries were created
-	entries, err := store.ListChildren(nil)
+	entries, err := store.ListChildren(0)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(entries), 2) // at least a.txt and docs/
 
@@ -77,7 +77,7 @@ func TestDaemon_WatcherDetectsNewFile(t *testing.T) {
 	time.Sleep(time.Second)
 
 	// Verify entry was created
-	entries, err := store.ListChildren(nil)
+	entries, err := store.ListChildren(0)
 	require.NoError(t, err)
 
 	found := false
@@ -117,7 +117,7 @@ func TestDaemon_SpacesOnlyColdStart(t *testing.T) {
 	assert.Equal(t, []byte("from spoke"), data)
 
 	// Entry should be registered and selected
-	entries, err := store.ListChildren(nil)
+	entries, err := store.ListChildren(0)
 	require.NoError(t, err)
 	found := false
 	for _, e := range entries {

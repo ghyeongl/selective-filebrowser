@@ -4,6 +4,7 @@ _old
 rice-box.go
 .idea/
 /filebrowser
+/filebrowser-*
 /filebrowser.exe
 /dist
 .venv
@@ -37,3 +38,7 @@ build/
 
 default.nix
 Dockerfile.dev
+
+*.db
+*.db-shm
+*.db-wal

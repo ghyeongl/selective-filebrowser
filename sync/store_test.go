@@ -41,7 +41,7 @@ func TestOpenDB_CreatesSchema(t *testing.T) {
 	var version string
 	err = db.QueryRow("SELECT value FROM meta WHERE key = 'schema_version'").Scan(&version)
 	require.NoError(t, err)
-	assert.Equal(t, "1", version)
+	assert.Equal(t, "2", version)
 }
 
 func TestOpenDB_Idempotent(t *testing.T) {
@@ -77,23 +77,20 @@ func TestUpsertEntry_Insert(t *testing.T) {
 
 	size := int64(1024)
 	err := store.UpsertEntry(Entry{
-		Inode:     100,
-		ParentIno: nil,
-		Name:      "docs",
-		Type:      "dir",
-		Mtime:     1707753600000000000,
-		Selected:  false,
+		Inode: 100,
+		Name:  "docs",
+		Type:  "dir",
+		Mtime: 1707753600000000000,
 	})
 	require.NoError(t, err)
 
 	err = store.UpsertEntry(Entry{
 		Inode:     200,
-		ParentIno: ptr(uint64(100)),
+		ParentIno: 100,
 		Name:      "file.txt",
 		Type:      "text",
 		Size:      &size,
 		Mtime:     1707753600000000000,
-		Selected:  false,
 	})
 	require.NoError(t, err)
 
@@ -116,14 +113,14 @@ func TestUpsertEntry_OnConflict(t *testing.T) {
 
 	// Insert file with inode 100
 	err = store.UpsertEntry(Entry{
-		Inode: 100, ParentIno: ptr(uint64(50)), Name: "report.txt",
+		Inode: 100, ParentIno: 50, Name: "report.txt",
 		Type: "text", Size: ptr(int64(500)), Mtime: 2000,
 	})
 	require.NoError(t, err)
 
 	// rm + touch: same parent+name, new inode 200
 	err = store.UpsertEntry(Entry{
-		Inode: 200, ParentIno: ptr(uint64(50)), Name: "report.txt",
+		Inode: 200, ParentIno: 50, Name: "report.txt",
 		Type: "text", Size: ptr(int64(800)), Mtime: 3000,
 	})
 	require.NoError(t, err)
@@ -142,6 +139,26 @@ func TestUpsertEntry_OnConflict(t *testing.T) {
 	assert.Equal(t, int64(3000), newEntry.Mtime)
 }
 
+func TestUpdateEntryName(t *testing.T) {
+	store := setupTestDB(t)
+
+	// Insert file
+	err := store.UpsertEntry(Entry{
+		Inode: 100, Name: "file.txt", Type: "text",
+		Size: ptr(int64(10)), Mtime: 1000, Selected: true,
+	})
+	require.NoError(t, err)
+
+	// Rename via UpdateEntryName
+	err = store.UpdateEntryName(100, "renamed.txt")
+	require.NoError(t, err)
+
+	entry, err := store.GetEntry(100)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, "renamed.txt", entry.Name)
+}
+
 func TestGetEntryByPath(t *testing.T) {
 	store := setupTestDB(t)
 
@@ -151,17 +168,17 @@ func TestGetEntryByPath(t *testing.T) {
 	require.NoError(t, err)
 
 	err = store.UpsertEntry(Entry{
-		Inode: 20, ParentIno: ptr(uint64(10)), Name: "hello.txt",
+		Inode: 20, ParentIno: 10, Name: "hello.txt",
 		Type: "text", Size: ptr(int64(5)), Mtime: 1000,
 	})
 	require.NoError(t, err)
 
-	e, err := store.GetEntryByPath(ptr(uint64(10)), "hello.txt")
+	e, err := store.GetEntryByPath(10, "hello.txt")
 	require.NoError(t, err)
 	require.NotNil(t, e)
 	assert.Equal(t, uint64(20), e.Inode)
 
-	e, err = store.GetEntryByPath(ptr(uint64(10)), "nonexistent.txt")
+	e, err = store.GetEntryByPath(10, "nonexistent.txt")
 	require.NoError(t, err)
 	assert.Nil(t, e)
 }
@@ -169,11 +186,11 @@ func TestGetEntryByPath(t *testing.T) {
 func TestListChildren(t *testing.T) {
 	store := setupTestDB(t)
 
-	// Root entries
+	// Root entries (parent_ino=0)
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "a_dir", Type: "dir", Mtime: 1000}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, Name: "b_file", Type: "text", Size: ptr(int64(10)), Mtime: 1000}))
 
-	children, err := store.ListChildren(nil)
+	children, err := store.ListChildren(0)
 	require.NoError(t, err)
 	require.Len(t, children, 2)
 	// Dirs come first
@@ -199,9 +216,9 @@ func TestSetSelected_Recursive(t *testing.T) {
 
 	// Tree: root_dir -> child_dir -> grandchild_file
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "root_dir", Type: "dir", Mtime: 1000}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: ptr(uint64(1)), Name: "child_dir", Type: "dir", Mtime: 1000}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: ptr(uint64(2)), Name: "grandchild.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, ParentIno: ptr(uint64(1)), Name: "sibling.txt", Type: "text", Size: ptr(int64(5)), Mtime: 1000}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: 1, Name: "child_dir", Type: "dir", Mtime: 1000}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: 2, Name: "grandchild.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, ParentIno: 1, Name: "sibling.txt", Type: "text", Size: ptr(int64(5)), Mtime: 1000}))
 
 	// Select root_dir recursively
 	err := store.SetSelected([]uint64{1}, true)
@@ -268,8 +285,8 @@ func TestAggregateSelectedSize(t *testing.T) {
 	store := setupTestDB(t)
 
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "dir", Type: "dir", Mtime: 1000, Selected: true}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: ptr(uint64(1)), Name: "a.txt", Type: "text", Size: ptr(int64(100)), Mtime: 1000, Selected: true}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: ptr(uint64(1)), Name: "b.txt", Type: "text", Size: ptr(int64(200)), Mtime: 1000, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: 1, Name: "a.txt", Type: "text", Size: ptr(int64(100)), Mtime: 1000, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: 1, Name: "b.txt", Type: "text", Size: ptr(int64(200)), Mtime: 1000, Selected: true}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, Name: "unsel.txt", Type: "text", Size: ptr(int64(999)), Mtime: 1000, Selected: false}))
 
 	total, err := store.AggregateSelectedSize()
@@ -281,9 +298,9 @@ func TestChildCounts(t *testing.T) {
 	store := setupTestDB(t)
 
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "parent", Type: "dir", Mtime: 1000}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: ptr(uint64(1)), Name: "a.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000, Selected: true}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: ptr(uint64(1)), Name: "b.txt", Type: "text", Size: ptr(int64(20)), Mtime: 1000, Selected: false}))
-	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, ParentIno: ptr(uint64(1)), Name: "c.txt", Type: "text", Size: ptr(int64(30)), Mtime: 1000, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: 1, Name: "a.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: 1, Name: "b.txt", Type: "text", Size: ptr(int64(20)), Mtime: 1000, Selected: false}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, ParentIno: 1, Name: "c.txt", Type: "text", Size: ptr(int64(30)), Mtime: 1000, Selected: true}))
 
 	total, sel, err := store.ChildCounts(1)
 	require.NoError(t, err)

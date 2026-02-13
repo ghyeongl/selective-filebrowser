@@ -204,18 +204,18 @@ func Seed(store *Store, archivesPath, spacesPath string) error {
 }
 
 // resolveParentIno finds the parent inode for a given relative path.
-func resolveParentIno(store *Store, root, relPath string, files map[string]FileStat) (*uint64, error) {
+// Returns 0 for root-level entries (virtual root).
+func resolveParentIno(store *Store, root, relPath string, files map[string]FileStat) (uint64, error) {
 	dir := filepath.Dir(relPath)
 	if dir == "." {
-		return nil, nil // root level
+		return 0, nil // root level → virtual root
 	}
 
 	parentStat, ok := files[dir]
 	if !ok {
-		return nil, fmt.Errorf("parent dir %s not found in scan results", dir)
+		return 0, fmt.Errorf("parent dir %s not found in scan results", dir)
 	}
-	ino := parentStat.Inode
-	return &ino, nil
+	return parentStat.Inode, nil
 }
 
 func sortByDepth(entries []pathEntry) {

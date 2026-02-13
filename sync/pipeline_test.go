@@ -72,7 +72,7 @@ func TestPipeline_Scenario2_Untracked(t *testing.T) {
 	env.run(t, "newfile.txt")
 
 	// Entry should be registered
-	entries, err := env.store.ListChildren(nil)
+	entries, err := env.store.ListChildren(0)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "newfile.txt", entries[0].Name)
@@ -87,7 +87,7 @@ func TestPipeline_Scenario4_UntrackedBothDisks(t *testing.T) {
 
 	env.run(t, "both.txt")
 
-	entries, err := env.store.ListChildren(nil)
+	entries, err := env.store.ListChildren(0)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.True(t, entries[0].Selected) // S_disk=1 → sel=1
@@ -100,7 +100,7 @@ func TestPipeline_SelectFlow(t *testing.T) {
 
 	// First run: register (→ #15 archived)
 	env.run(t, "doc.txt")
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 	assert.False(t, entries[0].Selected)
 
@@ -129,7 +129,7 @@ func TestPipeline_DeselectFlow(t *testing.T) {
 
 	// Register with sel=1 (both disks)
 	env.run(t, "file.txt")
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 
 	// Deselect
@@ -155,7 +155,7 @@ func TestPipeline_SDirty(t *testing.T) {
 
 	// Register
 	env.run(t, "sync.txt")
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 	entry := entries[0]
 
@@ -186,7 +186,7 @@ func TestPipeline_ADirty(t *testing.T) {
 
 	// Register
 	env.run(t, "file.txt")
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	entry := entries[0]
 
 	// Modify Archives (A_dirty)
@@ -215,7 +215,7 @@ func TestPipeline_P0Recovery(t *testing.T) {
 	env.writeSpaces(t, "recover.txt", []byte("original"))
 	env.run(t, "recover.txt")
 
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 
 	// Delete Archives copy (simulating disk loss)
@@ -238,7 +238,7 @@ func TestPipeline_P0Lost(t *testing.T) {
 	env.writeArchive(t, "lost.txt", []byte("data"))
 	env.run(t, "lost.txt")
 
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 	inode := entries[0].Inode
 
@@ -253,9 +253,9 @@ func TestPipeline_P0Lost(t *testing.T) {
 	assert.Nil(t, e, "entry should be deleted from DB")
 }
 
-// Demonstrates the old PK collision bug: rename preserves inode,
-// so INSERT with the same inode hits PRIMARY KEY conflict.
-func TestConflict_OldLogic_PKCollision(t *testing.T) {
+// Demonstrates that UpdateEntryName handles rename correctly:
+// same inode, different name → updates existing row.
+func TestUpdateEntryName_RenamePreservesInode(t *testing.T) {
 	store := setupTestDB(t)
 	dir := t.TempDir()
 
@@ -281,24 +281,13 @@ func TestConflict_OldLogic_PKCollision(t *testing.T) {
 	cStat := cInfo.Sys().(*syscall.Stat_t)
 	assert.Equal(t, origInode, cStat.Ino, "rename preserves inode")
 
-	// OLD LOGIC: INSERT with same inode but different name → PK collision.
-	// UpsertEntry has ON CONFLICT(parent_ino, name), but NOT on PK(inode).
-	// Since the PK constraint is violated without a matching ON CONFLICT clause,
-	// SQLite applies the default ABORT policy — the INSERT fails and the
-	// original row is preserved unchanged.
-	err = store.UpsertEntry(Entry{
-		Inode: cStat.Ino, Name: "file_conflict-1.txt", Type: "text",
-		Mtime: cInfo.ModTime().UnixNano(), Selected: true,
-	})
-	assert.Error(t, err, "PK collision should cause INSERT to fail")
+	// UpdateEntryName handles rename: same inode, new name
+	err = store.UpdateEntryName(cStat.Ino, "file_conflict-1.txt")
+	require.NoError(t, err, "UpdateEntryName should handle rename without error")
 
 	entry, _ := store.GetEntry(origInode)
-	t.Logf("After PK-collision INSERT: inode=%d name=%q", entry.Inode, entry.Name)
-	// The row still has the original name — the INSERT was rejected.
-	// This is why P2 conflict handling must use UpdateEntryName first,
-	// then SafeCopy to create a new file with a new inode.
-	assert.Equal(t, "file.txt", entry.Name,
-		"PK collision: INSERT rejected, original row preserved")
+	assert.Equal(t, "file_conflict-1.txt", entry.Name,
+		"UpdateEntryName should update the name for the same inode")
 }
 
 // P2 conflict: ADirty && SDirty → rename archive, copy S→A, verify DB has two correct entries
@@ -312,7 +301,7 @@ func TestPipeline_P2Conflict(t *testing.T) {
 	// Register + sync (creates entry + spaces_view)
 	env.run(t, "file.txt")
 
-	entries, _ := env.store.ListChildren(nil)
+	entries, _ := env.store.ListChildren(0)
 	require.Len(t, entries, 1)
 	origInode := entries[0].Inode
 	assert.Equal(t, "file.txt", entries[0].Name)
@@ -349,7 +338,7 @@ func TestPipeline_P2Conflict(t *testing.T) {
 		"DB entry for original inode should be renamed to conflict name")
 
 	// Verify DB: a new entry should exist for file.txt with a different inode
-	allEntries, _ := env.store.ListChildren(nil)
+	allEntries, _ := env.store.ListChildren(0)
 	require.Len(t, allEntries, 2, "DB should have 2 entries: file.txt and file_conflict-1.txt")
 
 	var newEntry *Entry

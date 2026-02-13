@@ -472,7 +472,7 @@ func TestE2E_ColdStart_EmptyDirectories(t *testing.T) {
 
 	entries := env.getEntries(nil)
 	assert.Empty(t, entries)
-	assert.Equal(t, int64(0), env.getStats().SelectedSize)
+	assert.Equal(t, int64(0), env.getStats().SpacesSize)
 }
 
 func TestE2E_ColdStart_ArchivesOnly(t *testing.T) {
@@ -517,7 +517,7 @@ func TestE2E_ColdStart_ArchivesOnly(t *testing.T) {
 	assert.Equal(t, 0, spacesFiles)
 
 	// Stats
-	assert.Equal(t, int64(0), env.getStats().SelectedSize)
+	assert.Equal(t, int64(0), env.getStats().SpacesSize)
 }
 
 func TestE2E_ColdStart_BothDirectories(t *testing.T) {
@@ -644,7 +644,7 @@ func TestE2E_SelectFolderRecursive(t *testing.T) {
 
 	// Stats: selectedSize should be 230 (100 + 50 + 80)
 	stats := env.getStats()
-	assert.Equal(t, int64(230), stats.SelectedSize)
+	assert.Equal(t, int64(230), stats.SpacesSize)
 
 	// ChildCounts for Projects
 	updatedProjects := env.findEntryByName("Projects")
@@ -688,7 +688,7 @@ func TestE2E_SelectMultipleFiles(t *testing.T) {
 
 	// Stats
 	stats := env.getStats()
-	assert.Equal(t, int64(40), stats.SelectedSize)
+	assert.Equal(t, int64(40), stats.SpacesSize)
 
 	// b.txt should still be unselected
 	b := env.findEntryByName("b.txt")
@@ -787,7 +787,7 @@ func TestE2E_DeselectFolderRecursive(t *testing.T) {
 
 	// Stats: selectedSize should be 0
 	stats := env.getStats()
-	assert.Equal(t, int64(0), stats.SelectedSize)
+	assert.Equal(t, int64(0), stats.SpacesSize)
 }
 
 // ============================================================================
@@ -1011,7 +1011,7 @@ func TestE2E_DaemonRestartDirtyState(t *testing.T) {
 	require.NoError(t, Seed(env.store, env.archivesRoot, env.spacesRoot))
 
 	// Simulate crash: user selected, but daemon died before P3 ran
-	entries, err := env.store.ListChildren(nil)
+	entries, err := env.store.ListChildren(0)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.NoError(t, env.store.SetSelected([]uint64{entries[0].Inode}, true))
@@ -1060,7 +1060,7 @@ func TestE2E_DaemonRestart_OrphanSpacesView(t *testing.T) {
 	require.NoError(t, Seed(env.store, env.archivesRoot, env.spacesRoot))
 
 	// Simulate orphan: add spaces_view without actual Spaces file
-	entries, err := env.store.ListChildren(nil)
+	entries, err := env.store.ListChildren(0)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	ino := entries[0].Inode
@@ -1361,8 +1361,8 @@ func TestE2E_StatusLabels(t *testing.T) {
 			store := NewStore(db)
 			tt.setup(t, store, archivesRoot, spacesRoot)
 
-			// No daemon — call handlers directly
-			handlers := NewHandlers(store, nil, archivesRoot, spacesRoot)
+			daemon := NewDaemon(store, archivesRoot, spacesRoot)
+			handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 			req := httptest.NewRequest("GET", "/api/sync/entries", nil)
 			w := httptest.NewRecorder()
 			handlers.HandleListEntries(w, req)
@@ -1398,7 +1398,7 @@ func TestE2E_StatsAccuracy(t *testing.T) {
 
 	// Step 1: baseline — nothing selected
 	stats := env.getStats()
-	assert.Equal(t, int64(0), stats.SelectedSize)
+	assert.Equal(t, int64(0), stats.SpacesSize)
 
 	// Step 2: select small + medium
 	small := env.findEntryByName("small.txt")
@@ -1415,7 +1415,7 @@ func TestE2E_StatsAccuracy(t *testing.T) {
 	})
 
 	stats = env.getStats()
-	assert.Equal(t, int64(1100), stats.SelectedSize)
+	assert.Equal(t, int64(1100), stats.SpacesSize)
 
 	// Step 3: also select large
 	large := env.findEntryByName("large.txt")
@@ -1430,7 +1430,7 @@ func TestE2E_StatsAccuracy(t *testing.T) {
 	})
 
 	stats = env.getStats()
-	assert.Equal(t, int64(11100), stats.SelectedSize)
+	assert.Equal(t, int64(11100), stats.SpacesSize)
 
 	// Step 4: deselect medium
 	resp = env.postDeselect([]uint64{medium.Inode})
@@ -1442,7 +1442,7 @@ func TestE2E_StatsAccuracy(t *testing.T) {
 	})
 
 	stats = env.getStats()
-	assert.Equal(t, int64(10100), stats.SelectedSize)
+	assert.Equal(t, int64(10100), stats.SpacesSize)
 }
 
 func TestE2E_CapacityWarningData(t *testing.T) {
@@ -1467,13 +1467,13 @@ func TestE2E_CapacityWarningData(t *testing.T) {
 	})
 
 	stats := env.getStats()
-	assert.Greater(t, stats.SelectedSize, int64(0))
-	assert.Greater(t, stats.SpacesTotal, int64(0))
+	assert.Greater(t, stats.SpacesSize, int64(0))
+	assert.Greater(t, stats.DiskTotal, int64(0))
 	assert.Greater(t, stats.SpacesFree, int64(0))
 
 	// Frontend can compare selectedSize vs spacesFree
 	// This is a sanity check, not an exact assertion
-	assert.Less(t, stats.SelectedSize, stats.SpacesTotal)
+	assert.Less(t, stats.SpacesSize, stats.DiskTotal)
 }
 
 // ============================================================================
@@ -1854,7 +1854,7 @@ func TestE2E_FullUserWorkflow(t *testing.T) {
 	assert.Equal(t, "archived", doc.Status)
 
 	stats := env.getStats()
-	assert.Equal(t, int64(0), stats.SelectedSize)
+	assert.Equal(t, int64(0), stats.SpacesSize)
 
 	// Step 2: select doc.txt
 	resp := env.postSelect([]uint64{doc.Inode})
@@ -1917,7 +1917,7 @@ func TestE2E_FullUserWorkflow(t *testing.T) {
 
 	// Step 7: verify stats
 	stats = env.getStats()
-	assert.Equal(t, int64(600), stats.SelectedSize) // only photo.jpg (600 bytes)
+	assert.Equal(t, int64(600), stats.SpacesSize) // only photo.jpg (600 bytes)
 }
 
 func TestE2E_BulkOperationsLargeTree(t *testing.T) {
@@ -1965,7 +1965,7 @@ func TestE2E_BulkOperationsLargeTree(t *testing.T) {
 
 	// Verify stats
 	stats := env.getStats()
-	assert.Equal(t, int64(numDirs*filesPerDir*100), stats.SelectedSize) // 50 * 100 = 5000
+	assert.Equal(t, int64(numDirs*filesPerDir*100), stats.SpacesSize) // 50 * 100 = 5000
 
 	// Deselect all
 	resp = env.postDeselect(rootInodes)
@@ -1978,5 +1978,5 @@ func TestE2E_BulkOperationsLargeTree(t *testing.T) {
 	})
 
 	stats = env.getStats()
-	assert.Equal(t, int64(0), stats.SelectedSize)
+	assert.Equal(t, int64(0), stats.SpacesSize)
 }
