@@ -114,7 +114,7 @@ func addServerFlags(flags *pflag.FlagSet) {
 	flags.Bool("disableImageResolutionCalc", false, "disables image resolution calculation by reading image files")
 	flags.String("archivesPath", "", "path to Archives directory for selective sync")
 	flags.String("spacesPath", "", "path to Spaces directory for selective sync")
-	flags.Bool("syncLog", false, "enable sync daemon debug logging to ./log/sync.log")
+	flags.String("syncLog", "", "sync debug log path (e.g. /log/sync.log); empty=disabled, 'true'=legacy ./log/sync.log")
 }
 
 var rootCmd = &cobra.Command{
@@ -251,10 +251,14 @@ user created with the credentials from options "username" and "password".`,
 		// Set up sync daemon if paths are configured
 		var syncHandlers *ssync.Handlers
 		if server.ArchivesPath != "" && server.SpacesPath != "" {
-			if v.GetBool("syncLog") {
-				os.MkdirAll("log", 0755)
+			syncLogPath := v.GetString("syncLog")
+			if syncLogPath != "" && syncLogPath != "false" {
+				if syncLogPath == "true" {
+					syncLogPath = "log/sync.log" // legacy bool compat
+				}
+				os.MkdirAll(filepath.Dir(syncLogPath), 0755)
 				ssync.InitLogger(&lumberjack.Logger{
-					Filename:   "log/sync.log",
+					Filename:   syncLogPath,
 					MaxSize:    100,
 					MaxAge:     14,
 					MaxBackups: 10,
