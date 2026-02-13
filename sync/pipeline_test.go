@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -250,6 +251,118 @@ func TestPipeline_P0Lost(t *testing.T) {
 	e, err := env.store.GetEntry(inode)
 	require.NoError(t, err)
 	assert.Nil(t, e, "entry should be deleted from DB")
+}
+
+// Demonstrates the old PK collision bug: rename preserves inode,
+// so INSERT with the same inode hits PRIMARY KEY conflict.
+func TestConflict_OldLogic_PKCollision(t *testing.T) {
+	store := setupTestDB(t)
+	dir := t.TempDir()
+
+	// Create file and register in DB
+	filePath := filepath.Join(dir, "file.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("original"), 0644))
+
+	info, err := os.Stat(filePath)
+	require.NoError(t, err)
+	stat := info.Sys().(*syscall.Stat_t)
+	origInode := stat.Ino
+
+	require.NoError(t, store.UpsertEntry(Entry{
+		Inode: origInode, Name: "file.txt", Type: "text",
+		Mtime: info.ModTime().UnixNano(), Selected: true,
+	}))
+
+	// Rename on disk (inode stays the same!)
+	conflictPath := filepath.Join(dir, "file_conflict-1.txt")
+	require.NoError(t, os.Rename(filePath, conflictPath))
+
+	cInfo, _ := os.Stat(conflictPath)
+	cStat := cInfo.Sys().(*syscall.Stat_t)
+	assert.Equal(t, origInode, cStat.Ino, "rename preserves inode")
+
+	// OLD LOGIC: INSERT with same inode but different name → PK collision.
+	// UpsertEntry has ON CONFLICT(parent_ino, name), but NOT on PK(inode).
+	// Since the PK constraint is violated without a matching ON CONFLICT clause,
+	// SQLite applies the default ABORT policy — the INSERT fails and the
+	// original row is preserved unchanged.
+	err = store.UpsertEntry(Entry{
+		Inode: cStat.Ino, Name: "file_conflict-1.txt", Type: "text",
+		Mtime: cInfo.ModTime().UnixNano(), Selected: true,
+	})
+	assert.Error(t, err, "PK collision should cause INSERT to fail")
+
+	entry, _ := store.GetEntry(origInode)
+	t.Logf("After PK-collision INSERT: inode=%d name=%q", entry.Inode, entry.Name)
+	// The row still has the original name — the INSERT was rejected.
+	// This is why P2 conflict handling must use UpdateEntryName first,
+	// then SafeCopy to create a new file with a new inode.
+	assert.Equal(t, "file.txt", entry.Name,
+		"PK collision: INSERT rejected, original row preserved")
+}
+
+// P2 conflict: ADirty && SDirty → rename archive, copy S→A, verify DB has two correct entries
+func TestPipeline_P2Conflict(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	// Setup: both Archives and Spaces have the same file
+	env.writeArchive(t, "file.txt", []byte("v1"))
+	env.writeSpaces(t, "file.txt", []byte("v1"))
+
+	// Register + sync (creates entry + spaces_view)
+	env.run(t, "file.txt")
+
+	entries, _ := env.store.ListChildren(nil)
+	require.Len(t, entries, 1)
+	origInode := entries[0].Inode
+	assert.Equal(t, "file.txt", entries[0].Name)
+
+	// Make both sides dirty
+	time.Sleep(10 * time.Millisecond)
+	env.writeArchive(t, "file.txt", []byte("v2 from archives"))
+	time.Sleep(10 * time.Millisecond)
+	env.writeSpaces(t, "file.txt", []byte("v2 from spaces"))
+
+	// Run pipeline → P2 conflict
+	env.run(t, "file.txt")
+
+	// Verify disk: both files should exist
+	assert.True(t, env.fileExists(filepath.Join(env.archivesRoot, "file.txt")),
+		"file.txt should exist in Archives (from Spaces)")
+	assert.True(t, env.fileExists(filepath.Join(env.archivesRoot, "file_conflict-1.txt")),
+		"file_conflict-1.txt should exist in Archives (renamed original)")
+
+	// Verify disk content
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 from spaces"), got, "file.txt should have Spaces content (Spaces wins)")
+
+	gotConflict, err := os.ReadFile(filepath.Join(env.archivesRoot, "file_conflict-1.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 from archives"), gotConflict, "conflict file should have old Archives content")
+
+	// Verify DB: original inode should now have name="file_conflict-1.txt"
+	origEntry, err := env.store.GetEntry(origInode)
+	require.NoError(t, err)
+	require.NotNil(t, origEntry, "original inode entry should still exist")
+	assert.Equal(t, "file_conflict-1.txt", origEntry.Name,
+		"DB entry for original inode should be renamed to conflict name")
+
+	// Verify DB: a new entry should exist for file.txt with a different inode
+	allEntries, _ := env.store.ListChildren(nil)
+	require.Len(t, allEntries, 2, "DB should have 2 entries: file.txt and file_conflict-1.txt")
+
+	var newEntry *Entry
+	for i := range allEntries {
+		if allEntries[i].Name == "file.txt" {
+			newEntry = &allEntries[i]
+			break
+		}
+	}
+	require.NotNil(t, newEntry, "DB should have an entry named file.txt")
+	assert.NotEqual(t, origInode, newEntry.Inode,
+		"file.txt should have a new inode (different from original)")
+	assert.True(t, newEntry.Selected, "new file.txt entry should be selected")
 }
 
 // Test splitPath utility

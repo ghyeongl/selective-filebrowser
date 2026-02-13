@@ -89,3 +89,42 @@ func TestDaemon_WatcherDetectsNewFile(t *testing.T) {
 	}
 	assert.True(t, found, "new.txt should be registered by watcher")
 }
+
+func TestDaemon_SpacesOnlyColdStart(t *testing.T) {
+	dir := t.TempDir()
+	archivesRoot := filepath.Join(dir, "Archives")
+	spacesRoot := filepath.Join(dir, "Spaces")
+	require.NoError(t, os.MkdirAll(archivesRoot, 0755))
+	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
+
+	// Only Spaces has the file — scenario #3
+	require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, "spoke.txt"), []byte("from spoke"), 0644))
+
+	store := setupTestDB(t)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go daemon.Run(ctx)
+
+	// Wait for seed + reconcile + pipeline
+	time.Sleep(2 * time.Second)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Archives/spoke.txt should be restored via P0: SafeCopy S→A
+	data, err := os.ReadFile(filepath.Join(archivesRoot, "spoke.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("from spoke"), data)
+
+	// Entry should be registered and selected
+	entries, err := store.ListChildren(nil)
+	require.NoError(t, err)
+	found := false
+	for _, e := range entries {
+		if e.Name == "spoke.txt" {
+			found = true
+			assert.True(t, e.Selected, "spoke.txt should be selected")
+		}
+	}
+	assert.True(t, found, "spoke.txt should be registered in DB")
+}
