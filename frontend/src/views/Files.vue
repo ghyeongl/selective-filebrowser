@@ -36,6 +36,7 @@ import { files as api } from "@/api";
 import { storeToRefs } from "pinia";
 import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
+import { useSyncStore } from "@/stores/sync";
 
 import HeaderBar from "@/components/header/HeaderBar.vue";
 import Breadcrumbs from "@/components/Breadcrumbs.vue";
@@ -51,6 +52,7 @@ const Preview = defineAsyncComponent(() => import("@/views/files/Preview.vue"));
 
 const layoutStore = useLayoutStore();
 const fileStore = useFileStore();
+const syncStore = useSyncStore();
 
 const { reload } = storeToRefs(fileStore);
 
@@ -162,6 +164,12 @@ const fetchData = async () => {
     fileStore.updateRequest(res);
     document.title = `${res.name || t("sidebar.myFiles")} - ${t("files.files")} - ${name}`;
     layoutStore.loading = false;
+
+    // Fetch sync entries for this directory
+    if (res.isDir) {
+      const syncPath = url.replace(/^\/files\/?/, "").replace(/\/$/, "") || "/";
+      syncStore.fetchEntries(syncPath);
+    }
 
     // Selects the post-reload target item or the previously visited child folder
     applyPreSelection();

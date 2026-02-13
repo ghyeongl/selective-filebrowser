@@ -17,15 +17,16 @@ export interface SyncListResponse {
 }
 
 export interface SyncStats {
-  selectedSize: number;
-  spacesTotal: number;
-  spacesFree: number;
+  diskTotal: number;
+  diskFree: number;
+  archivesSize: number;
+  spacesSize: number;
 }
 
 export async function listEntries(
-  parentIno?: number
+  path?: string
 ): Promise<SyncListResponse> {
-  const params = parentIno != null ? `?parent_ino=${parentIno}` : "";
+  const params = path != null ? `?path=${encodeURIComponent(path)}` : "";
   return fetchJSON<SyncListResponse>(`/api/sync/entries${params}`);
 }
 

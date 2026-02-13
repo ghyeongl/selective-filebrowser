@@ -25,7 +25,15 @@ https://raw.githubusercontent.com/dzwillia/vue-simple-progress/master/src/compon
       >
         {{ text }}
       </div>
-      <div class="vue-simple-progress-bar" :style="bar_style">
+      <template v-if="segments && segments.length > 0">
+        <div
+          v-for="(seg, i) in segment_styles"
+          :key="i"
+          class="vue-simple-progress-bar"
+          :style="seg"
+        ></div>
+      </template>
+      <div v-else class="vue-simple-progress-bar" :style="bar_style">
         <div
           :style="text_style"
           v-if="text.length > 0 && textPosition == 'inside'"
@@ -104,6 +112,12 @@ export default {
       type: String,
       default: "#222",
     },
+    segments: {
+      // Array of { value: number, color: string }
+      // When provided, renders multiple bars instead of one
+      type: Array,
+      default: null,
+    },
   },
   computed: {
     pct() {
@@ -164,6 +178,11 @@ export default {
         background: this.bgColor,
       };
 
+      if (this.segments && this.segments.length > 0) {
+        style["display"] = "flex";
+        style["overflow"] = "hidden";
+      }
+
       if (this.textPosition == "middle" || this.textPosition == "inside") {
         style["position"] = "relative";
         style["min-height"] = this.size_px + "px";
@@ -197,6 +216,18 @@ export default {
       }
 
       return style;
+    },
+    segment_styles() {
+      if (!this.segments) return [];
+      return this.segments.map((seg) => {
+        const pct = Math.min(((seg.value / this.max) * 100).toFixed(2), 100);
+        return {
+          background: seg.color,
+          width: pct + "%",
+          height: this.size_px + "px",
+          transition: this.barTransition,
+        };
+      });
     },
     text_style() {
       const style = {

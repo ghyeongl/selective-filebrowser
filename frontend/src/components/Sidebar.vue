@@ -85,16 +85,22 @@
       </router-link>
     </template>
 
-    <SpacesUsageBar v-if="isFiles" />
-
-    <div
-      class="credits"
-      v-if="isFiles && !disableUsedPercentage"
-      style="width: 90%; margin: 2em 2.5em 3em 2.5em"
-    >
-      <progress-bar :val="usage.usedPercentage" size="small"></progress-bar>
-      <br />
-      {{ usage.used }} of {{ usage.total }} used
+    <div v-if="isFiles && syncStats" class="storage-info">
+      <progress-bar
+        :max="syncStats.diskTotal"
+        :segments="storageSegments"
+        size="small"
+        bg-color="#e9ecef"
+        :bar-border-radius="3"
+      />
+      <div class="storage-summary">
+        {{ diskUsedLabel }} of {{ diskTotalLabel }} used
+      </div>
+      <div class="seg-legend">
+        <div><i class="dot archives"></i>Archives: {{ archivesLabel }}</div>
+        <div><i class="dot spaces"></i>Spaces: {{ spacesLabel }}</div>
+        <div><i class="dot other"></i>Other: {{ otherLabel }}</div>
+      </div>
     </div>
 
     <p class="credits">
@@ -117,45 +123,34 @@
 </template>
 
 <script>
-import { reactive } from "vue";
 import { mapActions, mapState } from "pinia";
 import { useAuthStore } from "@/stores/auth";
 import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
+import { useSyncStore } from "@/stores/sync";
 
+import ProgressBar from "@/components/ProgressBar.vue";
 import * as auth from "@/utils/auth";
 import {
   version,
   signup,
   hideLoginButton,
   disableExternal,
-  disableUsedPercentage,
   noAuth,
   logoutPage,
   loginPage,
 } from "@/utils/constants";
-import { files as api } from "@/api";
-import ProgressBar from "@/components/ProgressBar.vue";
-import SpacesUsageBar from "@/components/sync/SpacesUsageBar.vue";
 import prettyBytes from "pretty-bytes";
-
-const USAGE_DEFAULT = { used: "0 B", total: "0 B", usedPercentage: 0 };
 
 export default {
   name: "sidebar",
-  setup() {
-    const usage = reactive(USAGE_DEFAULT);
-    return { usage, usageAbortController: new AbortController() };
-  },
-  components: {
-    ProgressBar,
-    SpacesUsageBar,
-  },
+  components: { ProgressBar },
   inject: ["$showError"],
   computed: {
     ...mapState(useAuthStore, ["user", "isLoggedIn"]),
-    ...mapState(useFileStore, ["isFiles", "reload"]),
+    ...mapState(useFileStore, ["isFiles"]),
     ...mapState(useLayoutStore, ["currentPromptName"]),
+    ...mapState(useSyncStore, { syncStats: "stats" }),
     active() {
       return this.currentPromptName === "sidebar";
     },
@@ -163,35 +158,49 @@ export default {
     hideLoginButton: () => hideLoginButton,
     version: () => version,
     disableExternal: () => disableExternal,
-    disableUsedPercentage: () => disableUsedPercentage,
     canLogout: () => !noAuth && (loginPage || logoutPage !== "/login"),
+    diskUsed() {
+      if (!this.syncStats) return 0;
+      return this.syncStats.diskTotal - this.syncStats.diskFree;
+    },
+    otherSize() {
+      if (!this.syncStats) return 0;
+      return Math.max(
+        0,
+        this.diskUsed -
+          this.syncStats.archivesSize -
+          this.syncStats.spacesSize
+      );
+    },
+    storageSegments() {
+      if (!this.syncStats) return [];
+      return [
+        { value: this.syncStats.archivesSize, color: "#4dabf7" },
+        { value: this.syncStats.spacesSize, color: "#40c057" },
+        { value: this.otherSize, color: "#868e96" },
+      ];
+    },
+    diskUsedLabel() {
+      return prettyBytes(this.diskUsed, { binary: true });
+    },
+    diskTotalLabel() {
+      if (!this.syncStats) return "0 B";
+      return prettyBytes(this.syncStats.diskTotal, { binary: true });
+    },
+    archivesLabel() {
+      if (!this.syncStats) return "0 B";
+      return prettyBytes(this.syncStats.archivesSize, { binary: true });
+    },
+    spacesLabel() {
+      if (!this.syncStats) return "0 B";
+      return prettyBytes(this.syncStats.spacesSize, { binary: true });
+    },
+    otherLabel() {
+      return prettyBytes(this.otherSize, { binary: true });
+    },
   },
   methods: {
     ...mapActions(useLayoutStore, ["closeHovers", "showHover"]),
-    abortOngoingFetchUsage() {
-      this.usageAbortController.abort();
-    },
-    async fetchUsage() {
-      const path = this.$route.path.endsWith("/")
-        ? this.$route.path
-        : this.$route.path + "/";
-      let usageStats = USAGE_DEFAULT;
-      if (this.disableUsedPercentage) {
-        return Object.assign(this.usage, usageStats);
-      }
-      try {
-        this.abortOngoingFetchUsage();
-        this.usageAbortController = new AbortController();
-        const usage = await api.usage(path, this.usageAbortController.signal);
-        usageStats = {
-          used: prettyBytes(usage.used, { binary: true }),
-          total: prettyBytes(usage.total, { binary: true }),
-          usedPercentage: Math.round((usage.used / usage.total) * 100),
-        };
-      } finally {
-        return Object.assign(this.usage, usageStats);
-      }
-    },
     toRoot() {
       this.$router.push({ path: "/files" });
       this.closeHovers();
@@ -213,14 +222,52 @@ export default {
     $route: {
       handler(to) {
         if (to.path.includes("/files")) {
-          this.fetchUsage();
+          useSyncStore().fetchStats();
         }
       },
       immediate: true,
     },
   },
-  unmounted() {
-    this.abortOngoingFetchUsage();
-  },
 };
 </script>
+
+<style scoped>
+.storage-info {
+  padding: 0 2.5em;
+  margin: 1.5em 0 1em;
+}
+
+.storage-summary {
+  font-size: 0.75em;
+  color: #868e96;
+  margin-top: 4px;
+}
+
+.seg-legend {
+  font-size: 0.7em;
+  color: #868e96;
+  margin-top: 2px;
+  line-height: 1.6;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.dot.archives {
+  background: #4dabf7;
+}
+
+.dot.spaces {
+  background: #40c057;
+}
+
+.dot.other {
+  background: #868e96;
+}
+</style>

@@ -10,7 +10,7 @@ import {
 
 interface SyncState {
   entries: SyncEntry[];
-  parentIno: number | null;
+  currentPath: string | null;
   stats: SyncStats | null;
   loading: boolean;
 }
@@ -18,40 +18,30 @@ interface SyncState {
 export const useSyncStore = defineStore("sync", {
   state: (): SyncState => ({
     entries: [],
-    parentIno: null,
+    currentPath: null,
     stats: null,
     loading: false,
   }),
   actions: {
-    async fetchEntries(parentIno?: number) {
+    async fetchEntries(path?: string) {
       this.loading = true;
       try {
-        const resp = await listEntries(parentIno);
+        const resp = await listEntries(path);
         this.entries = resp.items;
-        this.parentIno = parentIno ?? null;
+        this.currentPath = path ?? null;
       } finally {
         this.loading = false;
       }
     },
     async select(inodes: number[]) {
       await selectEntries(inodes);
-      // Optimistic update
-      for (const entry of this.entries) {
-        if (inodes.includes(entry.inode)) {
-          entry.selected = true;
-          entry.status = "syncing";
-        }
-      }
+      // Re-fetch to get actual status after synchronous pipeline
+      await this.fetchEntries(this.currentPath ?? "/");
     },
     async deselect(inodes: number[]) {
       await deselectEntries(inodes);
-      // Optimistic update
-      for (const entry of this.entries) {
-        if (inodes.includes(entry.inode)) {
-          entry.selected = false;
-          entry.status = "removing";
-        }
-      }
+      // Re-fetch to get actual status after synchronous pipeline
+      await this.fetchEntries(this.currentPath ?? "/");
     },
     async fetchStats() {
       this.stats = await getStats();
