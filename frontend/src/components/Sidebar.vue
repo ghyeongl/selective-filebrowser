@@ -233,7 +233,7 @@ export default {
 
 <style scoped>
 .storage-info {
-  padding: 0 2.5em;
+  padding: 1em 2.5em 0;
   margin: 1.5em 0 1em;
 }
 

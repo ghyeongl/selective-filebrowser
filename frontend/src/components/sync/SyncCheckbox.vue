@@ -1,7 +1,7 @@
 <template>
   <label
     class="sync-checkbox"
-    :class="{ indeterminate }"
+    :class="{ indeterminate, disabled }"
     @click.stop="toggle"
     :title="tooltipText"
   >
@@ -9,6 +9,7 @@
       type="checkbox"
       :checked="selected"
       :indeterminate="indeterminate"
+      :disabled="disabled"
       @click.stop
       @change.stop="toggle"
     />
@@ -20,6 +21,7 @@ import { computed } from "vue";
 
 const props = defineProps<{
   selected: boolean;
+  disabled?: boolean;
   childTotalCount?: number;
   childSelectedCount?: number;
 }>();
@@ -45,7 +47,9 @@ const tooltipText = computed(() => {
 });
 
 const toggle = () => {
-  emit("toggle");
+  if (!props.disabled) {
+    emit("toggle");
+  }
 };
 </script>
 
@@ -64,5 +68,14 @@ const toggle = () => {
   height: 18px;
   cursor: pointer;
   accent-color: #40c057;
+}
+
+.sync-checkbox.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.sync-checkbox.disabled input[type="checkbox"] {
+  cursor: not-allowed;
 }
 </style>

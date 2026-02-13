@@ -25,6 +25,7 @@ const label = computed(() => {
     lost: "lost",
     untracked: "untracked",
     repairing: "repairing",
+    no_entry: "no entry",
   };
   return labels[props.status] || props.status;
 });
@@ -83,5 +84,9 @@ const label = computed(() => {
 .status-repairing {
   color: #e67700;
   background: #fff3bf;
+}
+.status-no_entry {
+  color: #adb5bd;
+  background: #f8f9fa;
 }
 </style>

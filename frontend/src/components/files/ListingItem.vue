@@ -29,6 +29,11 @@
       :childSelectedCount="syncEntry.childSelectedCount"
       @toggle="onSyncToggle"
     />
+    <SyncCheckbox
+      v-else-if="!syncStore.loading"
+      :selected="false"
+      :disabled="true"
+    />
     <div>
       <img
         v-if="!readOnly && type === 'image' && isThumbsEnabled"
@@ -41,6 +46,7 @@
       <p class="name">
         {{ name }}
         <SyncStatusBadge v-if="syncEntry" :status="syncEntry.status" />
+        <SyncStatusBadge v-else-if="!syncStore.loading" status="no_entry" />
       </p>
 
       <p v-if="isDir" class="size" data-order="-1">&mdash;</p>
