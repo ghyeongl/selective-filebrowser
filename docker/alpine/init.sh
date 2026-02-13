@@ -7,6 +7,9 @@ if [ ! -f "/config/settings.json" ]; then
   cp -a /defaults/settings.json /config/settings.json
 fi
 
+# Ensure sync directories exist
+mkdir -p /archives /spaces /log
+
 # Extract config file path from arguments
 config_file=""
 next_is_config=0

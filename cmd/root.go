@@ -114,6 +114,7 @@ func addServerFlags(flags *pflag.FlagSet) {
 	flags.Bool("disableImageResolutionCalc", false, "disables image resolution calculation by reading image files")
 	flags.String("archivesPath", "", "path to Archives directory for selective sync")
 	flags.String("spacesPath", "", "path to Spaces directory for selective sync")
+	flags.Bool("syncLog", false, "enable sync daemon debug logging to ./log/sync.log")
 }
 
 var rootCmd = &cobra.Command{
@@ -199,6 +200,15 @@ user created with the credentials from options "username" and "password".`,
 		}
 		server.Root = root
 
+		// When archivesPath is configured, use it as the file browser root
+		// so users see Archives contents as the top level
+		if server.ArchivesPath != "" {
+			absArchives, absErr := filepath.Abs(server.ArchivesPath)
+			if absErr == nil {
+				server.Root = absArchives
+			}
+		}
+
 		adr := server.Address + ":" + server.Port
 
 		var listener net.Listener
@@ -241,6 +251,18 @@ user created with the credentials from options "username" and "password".`,
 		// Set up sync daemon if paths are configured
 		var syncHandlers *ssync.Handlers
 		if server.ArchivesPath != "" && server.SpacesPath != "" {
+			if v.GetBool("syncLog") {
+				os.MkdirAll("log", 0755)
+				ssync.InitLogger(&lumberjack.Logger{
+					Filename:   "log/sync.log",
+					MaxSize:    100,
+					MaxAge:     14,
+					MaxBackups: 10,
+				})
+			} else {
+				ssync.InitLogger(nil)
+			}
+
 			fbDBPath, _ := filepath.Abs(v.GetString("database"))
 			syncDB, dbErr := ssync.OpenDB(fbDBPath)
 			if dbErr != nil {
@@ -402,22 +424,26 @@ func getServerSettings(v *viper.Viper, st *storage.Storage) (*settings.Server, e
 	return server, nil
 }
 
-func setupLog(logMethod string) {
+func logWriter(logMethod string) io.Writer {
 	switch logMethod {
 	case "stdout":
-		log.SetOutput(os.Stdout)
+		return os.Stdout
 	case "stderr":
-		log.SetOutput(os.Stderr)
+		return os.Stderr
 	case "":
-		log.SetOutput(io.Discard)
+		return io.Discard
 	default:
-		log.SetOutput(&lumberjack.Logger{
+		return &lumberjack.Logger{
 			Filename:   logMethod,
 			MaxSize:    100,
 			MaxAge:     14,
 			MaxBackups: 10,
-		})
+		}
 	}
+}
+
+func setupLog(logMethod string) {
+	log.SetOutput(logWriter(logMethod))
 }
 
 func quickSetup(v *viper.Viper, s *storage.Storage) error {

@@ -4,4 +4,9 @@ dist
 frontend/node_modules
 frontend/dist
 filebrowser.db
+sync.db
+sync.db-shm
+sync.db-wal
+log/
+.trash/
 docs/index.md

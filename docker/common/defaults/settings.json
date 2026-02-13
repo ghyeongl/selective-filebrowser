@@ -4,5 +4,8 @@
   "address": "",
   "log": "stdout",
   "database": "/database/filebrowser.db",
-  "root": "/srv"
+  "root": "/srv",
+  "archivesPath": "/archives",
+  "spacesPath": "/spaces",
+  "syncLog": true
 }

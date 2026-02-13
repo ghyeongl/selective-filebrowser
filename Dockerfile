@@ -29,8 +29,8 @@ COPY --from=fetcher /etc/mime.types /etc/mime.types
 COPY --from=fetcher /etc/ssl /etc/ssl
 
 # Create data directories, set ownership, and ensure healthcheck script is executable
-RUN mkdir -p /config /database /srv && \
-    chown -R user:user /config /database /srv \
+RUN mkdir -p /config /database /srv /archives /spaces /log && \
+    chown -R user:user /config /database /srv /archives /spaces /log \
     && chmod +x /healthcheck.sh
 
 # Define healthcheck script

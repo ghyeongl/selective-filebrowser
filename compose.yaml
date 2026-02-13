@@ -13,6 +13,9 @@ services:
       - 8000:80
     volumes:
       - filebrowser:/flux/vault
+      - db:/database
+      - ./archives:/archives    # Selective sync: Archives (hub)
+      - ./spaces:/spaces        # Selective sync: Spaces (spoke)
     environment:
       - REDIS_CACHE_URL=redis://default:filebrowser@redis:6379 # Use rediss:// for ssl
 
@@ -35,3 +38,4 @@ networks:
 
 volumes:
   filebrowser:
+  db:
