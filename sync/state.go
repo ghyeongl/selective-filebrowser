@@ -177,12 +177,17 @@ func ComputeState(entry *Entry, sv *SpacesView, archiveMtime *int64, spacesMtime
 
 	if entry != nil {
 		st.Selected = entry.Selected
-		if archiveMtime != nil {
-			st.ADirty = *archiveMtime != entry.Mtime
+		// Directory mtimes change whenever children are added/removed,
+		// so dirty detection is meaningless for them.
+		if entry.Type != "dir" {
+			if archiveMtime != nil {
+				st.ADirty = *archiveMtime != entry.Mtime
+			}
+			if sv != nil && spacesMtime != nil {
+				st.SDirty = *spacesMtime != sv.SyncedMtime
+			}
 		}
-	}
-
-	if sv != nil && spacesMtime != nil {
+	} else if sv != nil && spacesMtime != nil {
 		st.SDirty = *spacesMtime != sv.SyncedMtime
 	}
 

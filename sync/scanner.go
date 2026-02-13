@@ -20,10 +20,13 @@ type FileStat struct {
 // ScanDir walks a directory tree and returns FileStat for each entry.
 // relativeTo is used for path-based matching (the returned paths are relative).
 func ScanDir(root string) (map[string]FileStat, error) {
+	l := sub("scanner")
+	l.Debug("scan start", "root", root)
 	result := make(map[string]FileStat)
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			l.Warn("scan walk error", "path", path, "err", err)
 			return err
 		}
 
@@ -47,6 +50,7 @@ func ScanDir(root string) (map[string]FileStat, error) {
 
 		info, err := d.Info()
 		if err != nil {
+			l.Warn("scan stat error", "path", path, "err", err)
 			return err
 		}
 
@@ -71,6 +75,7 @@ func ScanDir(root string) (map[string]FileStat, error) {
 		return nil
 	})
 
+	l.Debug("scan complete", "root", root, "entries", len(result))
 	return result, err
 }
 

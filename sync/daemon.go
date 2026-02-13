@@ -2,7 +2,6 @@ package sync
 
 import (
 	"context"
-	"log"
 	"path/filepath"
 )
 
@@ -37,11 +36,12 @@ func (d *Daemon) Queue() *EvalQueue {
 // Run starts the daemon. It performs an initial seed, starts the watcher,
 // then processes the eval queue. Blocks until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) {
-	log.Println("[daemon] Starting sync daemon...")
+	l := sub("daemon")
+	l.Info("sync daemon starting", "archives", d.archivesRoot, "spaces", d.spacesRoot, "trash", d.trashRoot)
 
 	// Phase 1: Initial seed
 	if err := Seed(d.store, d.archivesRoot, d.spacesRoot); err != nil {
-		log.Printf("[daemon] Seed error: %v", err)
+		l.Error("seed failed, daemon aborting", "err", err)
 		return
 	}
 
@@ -51,24 +51,27 @@ func (d *Daemon) Run(ctx context.Context) {
 	// Phase 3: Start watcher in background
 	watcher, err := NewWatcher(d.archivesRoot, d.spacesRoot, d.queue)
 	if err != nil {
-		log.Printf("[daemon] Watcher error: %v", err)
+		l.Error("watcher creation failed, daemon aborting", "err", err)
 		return
 	}
 
 	go func() {
 		if err := watcher.Start(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[daemon] Watcher stopped: %v", err)
+			l.Warn("watcher stopped unexpectedly", "err", err)
 		}
 	}()
 
 	// Phase 4: Worker loop — process eval queue
-	log.Println("[daemon] Worker started, processing eval queue...")
+	l.Info("worker loop started")
 	done := ctx.Done()
 	for {
 		path, ok := d.queue.Pop(done)
 		if !ok {
+			l.Info("worker stopping, context cancelled")
 			break
 		}
+
+		l.Debug("queue pop", "path", path, "queueLen", d.queue.Len())
 
 		hasQueued := func() bool {
 			return d.queue.Has(path)
@@ -76,31 +79,38 @@ func (d *Daemon) Run(ctx context.Context) {
 
 		if err := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err != nil {
 			if ctx.Err() != nil {
+				l.Info("worker stopping, context cancelled")
 				break
 			}
-			log.Printf("[daemon] Pipeline error for %s: %v", path, err)
+			l.Error("pipeline failed", "path", path, "err", err)
+		} else {
+			l.Debug("pipeline ok", "path", path)
 		}
 	}
 
 	watcher.Close()
-	log.Println("[daemon] Sync daemon stopped.")
+	l.Debug("watcher closed")
+	l.Info("sync daemon stopped")
 }
 
 // fullReconcile pushes all known entries to the eval queue for re-evaluation.
 // This handles any state drift that occurred during downtime.
+// Spaces-only files are already handled by Seed (SafeCopy S→A + INSERT),
+// so reconcile only needs to iterate DB entries.
 func (d *Daemon) fullReconcile() {
-	log.Println("[daemon] Starting full reconcile...")
+	l := sub("daemon")
+	l.Info("full reconcile starting")
 
-	// Get all root-level entries and recursively push their paths
 	d.reconcileChildren(nil, "")
 
-	log.Printf("[daemon] Reconcile complete, %d paths queued", d.queue.Len())
+	l.Info("full reconcile complete", "queued", d.queue.Len())
 }
 
 func (d *Daemon) reconcileChildren(parentIno *uint64, parentPath string) {
+	l := sub("daemon")
 	children, err := d.store.ListChildren(parentIno)
 	if err != nil {
-		log.Printf("[daemon] reconcile list error: %v", err)
+		l.Error("reconcile list failed", "parentIno", parentIno, "err", err)
 		return
 	}
 
@@ -112,6 +122,7 @@ func (d *Daemon) reconcileChildren(parentIno *uint64, parentPath string) {
 
 		d.queue.Push(relPath)
 		d.pathCache.Set(child.Inode, relPath)
+		l.Debug("reconcile queued", "path", relPath, "inode", child.Inode, "type", child.Type)
 
 		if child.Type == "dir" {
 			ino := child.Inode

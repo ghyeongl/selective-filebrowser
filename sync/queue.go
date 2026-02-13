@@ -1,14 +1,17 @@
 package sync
 
-import "sync"
+import (
+	"log/slog"
+	gosync "sync"
+)
 
 // EvalQueue is a thread-safe set-based queue of relative paths to evaluate.
 // Duplicates are automatically deduplicated. Pop returns paths in FIFO order.
 type EvalQueue struct {
-	mu      sync.Mutex
-	set     map[string]struct{}
-	order   []string
-	notify  chan struct{} // signaled when items are added
+	mu     gosync.Mutex
+	set    map[string]struct{}
+	order  []string
+	notify chan struct{} // signaled when items are added
 }
 
 // NewEvalQueue creates a new eval queue.
@@ -22,13 +25,21 @@ func NewEvalQueue() *EvalQueue {
 // Push adds a path to the queue. If the path is already queued, this is a no-op.
 func (q *EvalQueue) Push(path string) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	if _, exists := q.set[path]; exists {
+		q.mu.Unlock()
+		if logEnabled(slog.LevelDebug) {
+			sub("queue").Debug("push dedup", "path", path)
+		}
 		return
 	}
 	q.set[path] = struct{}{}
 	q.order = append(q.order, path)
+	newLen := len(q.order)
+	q.mu.Unlock()
+
+	if logEnabled(slog.LevelDebug) {
+		sub("queue").Debug("push", "path", path, "queueLen", newLen)
+	}
 
 	// Non-blocking signal
 	select {
@@ -40,18 +51,23 @@ func (q *EvalQueue) Push(path string) {
 // PushMany adds multiple paths to the queue.
 func (q *EvalQueue) PushMany(paths []string) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	added := false
+	added := 0
 	for _, path := range paths {
 		if _, exists := q.set[path]; exists {
 			continue
 		}
 		q.set[path] = struct{}{}
 		q.order = append(q.order, path)
-		added = true
+		added++
 	}
-	if added {
+	newLen := len(q.order)
+	q.mu.Unlock()
+
+	if logEnabled(slog.LevelDebug) {
+		sub("queue").Debug("pushMany", "requested", len(paths), "added", added, "queueLen", newLen)
+	}
+
+	if added > 0 {
 		select {
 		case q.notify <- struct{}{}:
 		default:
@@ -68,7 +84,11 @@ func (q *EvalQueue) Pop(done <-chan struct{}) (string, bool) {
 			path := q.order[0]
 			q.order = q.order[1:]
 			delete(q.set, path)
+			remaining := len(q.order)
 			q.mu.Unlock()
+			if logEnabled(slog.LevelDebug) {
+				sub("queue").Debug("pop", "path", path, "queueLen", remaining)
+			}
 			return path, true
 		}
 		q.mu.Unlock()
@@ -76,6 +96,7 @@ func (q *EvalQueue) Pop(done <-chan struct{}) (string, bool) {
 		// Wait for signal or done
 		select {
 		case <-done:
+			sub("queue").Debug("pop cancelled")
 			return "", false
 		case <-q.notify:
 			// Loop back to check queue
@@ -101,9 +122,13 @@ func (q *EvalQueue) Len() int {
 // Drain removes and returns all queued paths.
 func (q *EvalQueue) Drain() []string {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	result := q.order
 	q.order = nil
 	q.set = make(map[string]struct{})
+	q.mu.Unlock()
+
+	if logEnabled(slog.LevelDebug) {
+		sub("queue").Debug("drain", "count", len(result))
+	}
 	return result
 }

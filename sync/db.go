@@ -3,6 +3,7 @@ package sync
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
@@ -44,6 +45,9 @@ func OpenDB(filebrowserDBPath string) (*sql.DB, error) {
 
 // openDBAt opens the database at the exact path. Useful for testing.
 func openDBAt(dbPath string) (*sql.DB, error) {
+	l := sub("db")
+	l.Info("opening sync database", "path", dbPath)
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sync db: %w", err)
@@ -53,11 +57,13 @@ func openDBAt(dbPath string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
+	l.Debug("PRAGMA foreign_keys=ON")
 
 	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
+	l.Debug("PRAGMA journal_mode=WAL")
 
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -68,6 +74,7 @@ func openDBAt(dbPath string) (*sql.DB, error) {
 }
 
 func migrate(db *sql.DB) error {
+	l := sub("db")
 	var version int
 	err := db.QueryRow("SELECT value FROM meta WHERE key = 'schema_version'").Scan(&version)
 	if err != nil {
@@ -79,11 +86,15 @@ func migrate(db *sql.DB) error {
 		if execErr != nil {
 			return fmt.Errorf("set schema version: %w", execErr)
 		}
+		l.Info("schema created", "version", schemaVersion)
 		return nil
 	}
 
 	if version < schemaVersion {
+		l.Info("schema upgrading", "from", version, "to", schemaVersion)
 		// Future migrations go here
+	} else {
+		l.Debug("schema up to date", slog.Int("version", version))
 	}
 
 	return nil
