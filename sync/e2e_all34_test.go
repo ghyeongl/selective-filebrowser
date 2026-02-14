@@ -411,23 +411,30 @@ func TestE2E_Scenario22_Repairing_Sel_ADirty(t *testing.T) {
 
 func TestE2E_Scenario23_Repairing_SDisk_NoSDb_NoSel(t *testing.T) {
 	env := setupPipelineEnv(t)
-	env.writeArchive(t, "rp23.txt", []byte("data"))
+	env.writeArchive(t, "rp23.txt", []byte("archive"))
 	env.run(t, "rp23.txt") // entry exists, no spaces_view
 
 	// Add Spaces file manually (S_disk=1 but S_db=0)
-	env.writeSpaces(t, "rp23.txt", []byte("data"))
+	env.writeSpaces(t, "rp23.txt", []byte("spaces"))
 	env.run(t, "rp23.txt")
 
 	entries, _ := env.store.ListChildren(0)
 	ino := entries[0].Inode
-	// P3 should remove Spaces since sel=0, then P4 should not create spaces_view
-	// OR P4 creates spaces_view since S_disk=1
-	// Depends on whether P3 fires first (sel=0, SDisk=1 → remove)
-	assert.False(t, env.fileExists(filepath.Join(env.spacesRoot, "rp23.txt")),
-		"#23: Spaces file should be removed (sel=0)")
+
+	// S_db=0 → S_disk is authority → selected=1, S→A copy (spoke wins)
+	e, _ := env.store.GetEntry(ino)
+	require.NotNil(t, e)
+	assert.True(t, e.Selected, "#23: selected should be 1 (S_disk authority)")
+
+	assert.True(t, env.fileExists(filepath.Join(env.spacesRoot, "rp23.txt")),
+		"#23: Spaces file should remain")
+
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "rp23.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("spaces"), got, "#23: Archives should have Spaces content")
 
 	sv, _ := env.store.GetSpacesView(ino)
-	assert.Nil(t, sv, "#23: no spaces_view since file removed")
+	assert.NotNil(t, sv, "#23: spaces_view should be created (P4)")
 }
 
 func TestE2E_Scenario24_Repairing_SDisk_NoSDb_NoSel_ADirty(t *testing.T) {
@@ -435,19 +442,52 @@ func TestE2E_Scenario24_Repairing_SDisk_NoSDb_NoSel_ADirty(t *testing.T) {
 	env.writeArchive(t, "rp24.txt", []byte("v1"))
 	env.run(t, "rp24.txt") // register
 
-	// Add Spaces, modify Archives
-	env.writeSpaces(t, "rp24.txt", []byte("v1"))
+	entries, _ := env.store.ListChildren(0)
+	origInode := entries[0].Inode
+
+	// Modify Archives (A_dirty), add Spaces file (S_disk=1, S_db=0)
 	time.Sleep(10 * time.Millisecond)
-	env.writeArchive(t, "rp24.txt", []byte("v2"))
+	env.writeArchive(t, "rp24.txt", []byte("v2 archives"))
+	env.writeSpaces(t, "rp24.txt", []byte("v2 spaces"))
 	env.run(t, "rp24.txt")
 
-	// sel=0 → P3 removes Spaces
-	entries, _ := env.store.ListChildren(0)
-	ino := entries[0].Inode
-	assert.False(t, env.fileExists(filepath.Join(env.spacesRoot, "rp24.txt")),
-		"#24: Spaces removed (sel=0)")
-	sv, _ := env.store.GetSpacesView(ino)
-	assert.Nil(t, sv, "#24: no spaces_view")
+	// S_db=0 + A_dirty → conflict, Spoke wins
+	// Original path should have Spaces content
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "rp24.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 spaces"), got, "#24: file.txt should have Spaces content")
+
+	// Conflict file should have Archives content
+	assert.True(t, env.fileExists(filepath.Join(env.archivesRoot, "rp24_conflict-1.txt")),
+		"#24: conflict file should exist")
+	gotConflict, err := os.ReadFile(filepath.Join(env.archivesRoot, "rp24_conflict-1.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 archives"), gotConflict, "#24: conflict should have Archives content")
+
+	// Old entry: renamed, selected=1
+	origEntry, _ := env.store.GetEntry(origInode)
+	require.NotNil(t, origEntry)
+	assert.Equal(t, "rp24_conflict-1.txt", origEntry.Name)
+	assert.True(t, origEntry.Selected, "#24: conflict entry should be selected=1")
+
+	// New entry at original name: selected=1, spaces_view exists
+	allEntries, _ := env.store.ListChildren(0)
+	var newEntry *Entry
+	for i := range allEntries {
+		if allEntries[i].Name == "rp24.txt" {
+			newEntry = &allEntries[i]
+			break
+		}
+	}
+	require.NotNil(t, newEntry)
+	assert.True(t, newEntry.Selected, "#24: new entry should be selected=1")
+
+	sv, _ := env.store.GetSpacesView(newEntry.Inode)
+	assert.NotNil(t, sv, "#24: spaces_view should exist for new entry")
+
+	// Spaces file should remain
+	assert.True(t, env.fileExists(filepath.Join(env.spacesRoot, "rp24.txt")),
+		"#24: Spaces file should remain")
 }
 
 func TestE2E_Scenario25_Repairing_SDisk_NoSDb_Sel(t *testing.T) {
@@ -548,7 +588,7 @@ func TestE2E_Scenario29_Removing_ADirty(t *testing.T) {
 		"#29: Spaces should be removed")
 }
 
-func TestE2E_Scenario30_Conflict_NoSel(t *testing.T) {
+func TestE2E_Scenario30_DeselectPriority(t *testing.T) {
 	env := setupPipelineEnv(t)
 	env.writeArchive(t, "cf30.txt", []byte("orig"))
 	env.writeSpaces(t, "cf30.txt", []byte("orig"))
@@ -565,14 +605,27 @@ func TestE2E_Scenario30_Conflict_NoSel(t *testing.T) {
 	env.writeSpaces(t, "cf30.txt", []byte("spaces v2"))
 	env.run(t, "cf30.txt")
 
-	// Spaces wins → Archives should have spaces content
+	// Deselect wins: A_dirty resolved, Spaces deleted → #15
 	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "cf30.txt"))
 	require.NoError(t, err)
-	assert.Equal(t, []byte("spaces v2"), got, "#30: Spaces should win conflict")
+	assert.Equal(t, []byte("archive v2"), got, "#30: Archives keeps its content")
 
-	// Conflict file should exist
+	// No conflict file
 	matches, _ := filepath.Glob(filepath.Join(env.archivesRoot, "cf30_conflict-*"))
-	assert.True(t, len(matches) > 0, "#30: conflict copy should exist")
+	assert.Len(t, matches, 0, "#30: no conflict file (deselect wins)")
+
+	// Spaces deleted
+	assert.False(t, env.fileExists(filepath.Join(env.spacesRoot, "cf30.txt")),
+		"#30: Spaces file should be deleted")
+
+	// spaces_view removed
+	sv, _ := env.store.GetSpacesView(ino)
+	assert.Nil(t, sv, "#30: spaces_view should be deleted")
+
+	// Entry mtime updated (A_dirty resolved)
+	e, _ := env.store.GetEntry(ino)
+	require.NotNil(t, e)
+	assert.False(t, e.Selected, "#30: still deselected")
 }
 
 func TestE2E_Scenario31_Synced(t *testing.T) {

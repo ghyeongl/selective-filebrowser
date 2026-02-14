@@ -354,6 +354,106 @@ func TestPipeline_P2Conflict(t *testing.T) {
 	assert.True(t, newEntry.Selected, "new file.txt entry should be selected")
 }
 
+// #23: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=0
+// External Spaces introduction → Spoke wins (S_disk is authority when S_db=0)
+func TestPipeline_Scenario23_ExternalSpacesAccept(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	// Register archive file → #15 (archived, selected=0)
+	env.writeArchive(t, "doc.txt", []byte("archive content"))
+	env.run(t, "doc.txt")
+
+	entries, _ := env.store.ListChildren(0)
+	require.Len(t, entries, 1)
+	assert.False(t, entries[0].Selected)
+	origInode := entries[0].Inode
+
+	// External file appears in Spaces (different content)
+	env.writeSpaces(t, "doc.txt", []byte("spaces content"))
+
+	// State: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=0 → #23
+	env.run(t, "doc.txt")
+
+	// selected should be 1 (S_disk is authority)
+	entry, err := env.store.GetEntry(origInode)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.True(t, entry.Selected, "selected should be set to 1 (S_disk authority)")
+
+	// Archives should have Spaces content (S→A copy)
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "doc.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("spaces content"), got, "Archives should have Spaces content (spoke wins)")
+
+	// spaces_view should exist (P4 creates it)
+	sv, err := env.store.GetSpacesView(origInode)
+	require.NoError(t, err)
+	assert.NotNil(t, sv, "spaces_view should be created by P4")
+}
+
+// #24: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=1
+// External Spaces introduction + Archives modified → conflict, Spoke wins
+func TestPipeline_Scenario24_ExternalSpacesConflict(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	// Register archive file → #15 (archived, selected=0)
+	env.writeArchive(t, "file.txt", []byte("v1"))
+	env.run(t, "file.txt")
+
+	entries, _ := env.store.ListChildren(0)
+	require.Len(t, entries, 1)
+	origInode := entries[0].Inode
+
+	// Modify Archives (creates A_dirty)
+	time.Sleep(10 * time.Millisecond)
+	env.writeArchive(t, "file.txt", []byte("v2 from archives"))
+
+	// External file appears in Spaces
+	env.writeSpaces(t, "file.txt", []byte("v2 from spaces"))
+
+	// State: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=1 → #24
+	env.run(t, "file.txt")
+
+	// Original path should have Spaces content (spoke wins)
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 from spaces"), got, "file.txt should have Spaces content")
+
+	// Conflict file should have old Archives content
+	assert.True(t, env.fileExists(filepath.Join(env.archivesRoot, "file_conflict-1.txt")),
+		"conflict file should exist")
+	gotConflict, err := os.ReadFile(filepath.Join(env.archivesRoot, "file_conflict-1.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2 from archives"), gotConflict, "conflict should have Archives content")
+
+	// DB: original entry should be renamed + selected=1
+	origEntry, err := env.store.GetEntry(origInode)
+	require.NoError(t, err)
+	require.NotNil(t, origEntry)
+	assert.Equal(t, "file_conflict-1.txt", origEntry.Name, "original entry renamed to conflict")
+	assert.True(t, origEntry.Selected, "conflict entry should be selected=1")
+
+	// DB: new entry at file.txt with selected=1
+	allEntries, _ := env.store.ListChildren(0)
+	require.Len(t, allEntries, 2, "should have 2 entries")
+
+	var newEntry *Entry
+	for i := range allEntries {
+		if allEntries[i].Name == "file.txt" {
+			newEntry = &allEntries[i]
+			break
+		}
+	}
+	require.NotNil(t, newEntry, "new file.txt entry should exist")
+	assert.NotEqual(t, origInode, newEntry.Inode, "new entry should have different inode")
+	assert.True(t, newEntry.Selected, "new entry should be selected=1")
+
+	// spaces_view should exist for new entry (P4)
+	sv, err := env.store.GetSpacesView(newEntry.Inode)
+	require.NoError(t, err)
+	assert.NotNil(t, sv, "spaces_view should be created for new entry")
+}
+
 // Test splitPath utility
 func TestSplitPath(t *testing.T) {
 	tests := []struct {

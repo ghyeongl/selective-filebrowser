@@ -148,7 +148,9 @@ func (s State) UIStatus() string {
 		return "removing"
 	case sc == 32 || sc == 33:
 		return "updating"
-	case sc == 30 || sc == 34:
+	case sc == 30:
+		return "removing"
+	case sc == 24 || sc == 34:
 		return "conflict"
 	case sc >= 9 && sc <= 14:
 		return "recovering"

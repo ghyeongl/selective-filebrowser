@@ -47,7 +47,7 @@ func TestScenario_All34(t *testing.T) {
 
 		// Group: A_disk=1, A_db=1, S_disk=1, S_db=0 (scenarios 23-26 — repairing)
 		{"#23 repairing sel=0 clean", State{ADisk: true, ADb: true, SDisk: true}, 23, "repairing"},
-		{"#24 repairing sel=0 A_dirty", State{ADisk: true, ADb: true, SDisk: true, ADirty: true}, 24, "repairing"},
+		{"#24 conflict sel=0 A_dirty", State{ADisk: true, ADb: true, SDisk: true, ADirty: true}, 24, "conflict"},
 		{"#25 repairing sel=1 clean", State{ADisk: true, ADb: true, SDisk: true, Selected: true}, 25, "repairing"},
 		{"#26 repairing sel=1 A_dirty", State{ADisk: true, ADb: true, SDisk: true, Selected: true, ADirty: true}, 26, "repairing"},
 
@@ -55,7 +55,7 @@ func TestScenario_All34(t *testing.T) {
 		{"#27 removing clean", State{ADisk: true, ADb: true, SDisk: true, SDb: true}, 27, "removing"},
 		{"#28 removing S_dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, SDirty: true}, 28, "removing"},
 		{"#29 removing A_dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, ADirty: true}, 29, "removing"},
-		{"#30 conflict sel=0 both dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, ADirty: true, SDirty: true}, 30, "conflict"},
+		{"#30 removing sel=0 both dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, ADirty: true, SDirty: true}, 30, "removing"},
 		{"#31 synced", State{ADisk: true, ADb: true, SDisk: true, SDb: true, Selected: true}, 31, "synced"},
 		{"#32 updating S_dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, Selected: true, SDirty: true}, 32, "updating"},
 		{"#33 updating A_dirty", State{ADisk: true, ADb: true, SDisk: true, SDb: true, Selected: true, ADirty: true}, 33, "updating"},
