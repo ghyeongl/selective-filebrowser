@@ -30,7 +30,6 @@ func logState(l *slog.Logger, msg, relPath string, state State) {
 // the appropriate actions to converge toward the target state.
 func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot, spacesRoot, trashRoot string, hasQueued func() bool) error {
 	l := sub("pipeline")
-	l.Debug("pipeline start", "path", relPath)
 
 	archivePath := filepath.Join(archivesRoot, relPath)
 	spacesPath := filepath.Join(spacesRoot, relPath)
@@ -49,9 +48,6 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 	state := ComputeState(entry, sv, archiveMtime, spacesMtime)
 	scenario := state.Scenario()
 
-	if logEnabled(slog.LevelDebug) {
-		logState(l, "state gathered", relPath, state)
-	}
 	switch scenario {
 	case 1, 15, 31:
 		// no-op: skip
@@ -455,9 +451,6 @@ func lookupDB(store *Store, archivesRoot, relPath string) (*Entry, *SpacesView, 
 			return nil, nil, err
 		}
 		if e == nil {
-			if logEnabled(slog.LevelDebug) {
-				sub("pipeline").Debug("lookupDB: not found", "path", relPath)
-			}
 			return nil, nil, nil // not in DB
 		}
 		entry = e
@@ -473,9 +466,6 @@ func lookupDB(store *Store, archivesRoot, relPath string) (*Entry, *SpacesView, 
 		return nil, nil, err
 	}
 
-	if logEnabled(slog.LevelDebug) {
-		sub("pipeline").Debug("lookupDB: found", "path", relPath, "inode", entry.Inode, "hasSV", sv != nil)
-	}
 	return entry, sv, nil
 }
 
