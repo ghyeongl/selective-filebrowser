@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Daemon orchestrates the sync process: initial enqueue, watcher, and eval queue worker.
@@ -70,6 +71,8 @@ func (d *Daemon) Run(ctx context.Context) {
 	// Worker loop — process eval queue
 	l.Info("worker loop started")
 	done := ctx.Done()
+	processed := 0
+	lastLog := time.Now()
 	for {
 		path, ok := d.queue.Pop(done)
 		if !ok {
@@ -87,6 +90,12 @@ func (d *Daemon) Run(ctx context.Context) {
 				break
 			}
 			l.Error("pipeline failed", "path", path, "err", err)
+		}
+
+		processed++
+		if time.Since(lastLog) >= 30*time.Second {
+			l.Info("worker progress", "processed", processed, "remaining", d.queue.Len())
+			lastLog = time.Now()
 		}
 	}
 

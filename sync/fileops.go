@@ -189,8 +189,7 @@ func ConflictName(originalPath string) string {
 
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s_conflict-%d%s", name, i, ext)
-		if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
-			sub("fileops").Debug("ConflictName resolved", "original", originalPath, "conflictName", candidate)
+		if _, err := os.Stat(filepath.Join(dir, candidate)); err != nil {
 			return candidate
 		}
 	}
