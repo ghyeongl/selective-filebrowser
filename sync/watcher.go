@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -72,10 +71,6 @@ func (w *Watcher) Start(ctx context.Context) error {
 				return nil
 			}
 
-			if logEnabled(slog.LevelDebug) {
-				l.Debug("event", "name", event.Name, "op", event.Op.String())
-			}
-
 			relPath := w.toRelPath(event.Name)
 			if relPath == "" {
 				continue
@@ -84,25 +79,17 @@ func (w *Watcher) Start(ctx context.Context) error {
 			// Skip .sync-conflict and hidden files
 			base := filepath.Base(event.Name)
 			if strings.HasPrefix(base, ".") || strings.Contains(base, ".sync-conflict-") {
-				if logEnabled(slog.LevelDebug) {
-					l.Debug("skip", "name", event.Name, "reason", "hidden or conflict")
-				}
 				continue
 			}
 
 			pending[relPath] = struct{}{}
-			if logEnabled(slog.LevelDebug) {
-				l.Debug("pending", "path", relPath, "op", event.Op.String())
-			}
 
 			// Reset debounce timer
 			timer.Reset(debounceInterval)
 
 			// If a new directory was created, add it to watch
 			if event.Has(fsnotify.Create) {
-				if err := w.watcher.Add(event.Name); err == nil {
-					l.Debug("added new dir", "path", event.Name)
-				}
+				_ = w.watcher.Add(event.Name)
 			}
 
 		case err, ok := <-w.watcher.Errors:
@@ -128,9 +115,6 @@ func (w *Watcher) Start(ctx context.Context) error {
 				}
 				w.queue.PushMany(paths)
 				l.Info("flushed", "count", len(paths))
-				if logEnabled(slog.LevelDebug) {
-					l.Debug("flush paths", "paths", paths)
-				}
 				pending = make(map[string]struct{})
 			}
 		}
@@ -165,7 +149,6 @@ func (w *Watcher) addRecursive(root string) error {
 			if err := w.watcher.Add(path); err != nil {
 				return err
 			}
-			l.Debug("added dir", "path", path)
 			return nil
 		}
 		return nil
