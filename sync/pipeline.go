@@ -52,7 +52,12 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 	if logEnabled(slog.LevelDebug) {
 		logState(l, "state gathered", relPath, state)
 	}
-	l.Info("pipeline evaluated", "path", relPath, "scenario", scenario, "status", state.UIStatus())
+	switch scenario {
+	case 1, 15, 31:
+		// no-op: skip
+	default:
+		l.Debug("pipeline evaluated", "path", relPath, "scenario", scenario)
+	}
 
 	// P0: Archives disk recovery (A_disk=0)
 	if !state.ADisk {
@@ -136,7 +141,17 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 		l.Debug("P4 done", "path", relPath)
 	}
 
-	l.Debug("pipeline complete", "path", relPath)
+	// Log final state transition for non-no-op scenarios
+	if scenario != 1 && scenario != 15 && scenario != 31 {
+		finalAMtime, _, _, _ := statFile(archivePath)
+		finalSMtime, _, _, _ := statFile(spacesPath)
+		finalEntry, finalSV, _ := lookupDB(store, archivesRoot, relPath)
+		finalState := ComputeState(finalEntry, finalSV, finalAMtime, finalSMtime)
+		l.Debug("pipeline resolved", "path", relPath,
+			"from", scenario, "to", finalState.Scenario(),
+			"status", finalState.UIStatus())
+	}
+
 	return nil
 }
 
@@ -145,7 +160,7 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 	l := sub("P0")
 	if state.SDisk {
 		// S_disk=1 → copy S→A to recover
-		l.Info("recovering from Spaces", "path", relPath)
+		l.Debug("recovering from Spaces", "path", relPath)
 		if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
 			return err
 		}
@@ -172,9 +187,9 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 			if err := store.DeleteSpacesView(sv.EntryIno); err != nil {
 				return fmt.Errorf("delete spaces_view: %w", err)
 			}
-			l.Info("deleting lost entry and spaces_view", "path", relPath, "inode", entry.Inode)
+			l.Debug("deleting lost entry and spaces_view", "path", relPath, "inode", entry.Inode)
 		} else {
-			l.Info("deleting lost entry", "path", relPath, "inode", entry.Inode)
+			l.Debug("deleting lost entry", "path", relPath, "inode", entry.Inode)
 		}
 		if err := store.DeleteEntry(entry.Inode); err != nil {
 			return fmt.Errorf("delete entry: %w", err)
@@ -212,7 +227,7 @@ func p1(store *Store, relPath, archivesRoot string, inode *uint64, isDir *bool, 
 		sizePtr = size
 	}
 
-	l.Info("registering entry", "path", relPath, "inode", *inode, "type", entryType, "selected", sel, "parentIno", parentIno)
+	l.Debug("registering entry", "path", relPath, "inode", *inode, "type", entryType, "selected", sel, "parentIno", parentIno)
 	return store.UpsertEntry(Entry{
 		Inode:     *inode,
 		ParentIno: parentIno,
@@ -271,7 +286,7 @@ func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 		}); err != nil {
 			return fmt.Errorf("register new archive entry: %w", err)
 		}
-		l.Info("conflict resolved", "path", relPath, "newInode", newStat.Ino, "oldInode", entry.Inode)
+		l.Debug("conflict resolved", "path", relPath, "newInode", newStat.Ino, "oldInode", entry.Inode)
 
 		// 5) Update spaces_view for the new entry
 		if sv != nil {
@@ -304,7 +319,7 @@ func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 
 		// If selected and S_disk=1, propagate change to Spaces
 		if entry.Selected && state.SDisk {
-			l.Info("propagating A->S", "path", relPath)
+			l.Debug("propagating A->S", "path", relPath)
 			if err := SafeCopy(ctx, archivePath, spacesPath, hasQueued); err != nil {
 				return fmt.Errorf("copy A→S: %w", err)
 			}
@@ -325,7 +340,7 @@ func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 	}
 
 	// S_dirty only — Spaces changed, propagate S→A
-	l.Info("propagating S->A", "path", relPath)
+	l.Debug("propagating S->A", "path", relPath)
 	if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
 		return fmt.Errorf("copy S→A: %w", err)
 	}
@@ -337,7 +352,7 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 	l := sub("P3")
 	if entry.Selected && !state.SDisk {
 		// Need to copy A→S
-		l.Info("syncing to Spaces", "path", relPath, "type", entry.Type)
+		l.Debug("syncing to Spaces", "path", relPath, "type", entry.Type)
 
 		// Re-check selected before copy (UI race guard)
 		freshEntry, err := store.GetEntry(entry.Inode)
@@ -345,7 +360,7 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 			return fmt.Errorf("re-check entry: %w", err)
 		}
 		if freshEntry == nil || !freshEntry.Selected {
-			l.Info("deselected before copy, skipping", "path", relPath, "inode", entry.Inode)
+			l.Debug("deselected before copy, skipping", "path", relPath, "inode", entry.Inode)
 			return nil
 		}
 
@@ -379,7 +394,7 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 
 	if !entry.Selected && state.SDisk {
 		// Need to remove from Spaces
-		l.Info("removing from Spaces", "path", relPath)
+		l.Debug("removing from Spaces", "path", relPath)
 		trashPath, err := SoftDelete(spacesPath, trashRoot)
 		if err != nil {
 			return fmt.Errorf("soft delete: %w", err)
@@ -404,7 +419,7 @@ func p4(store *Store, entry *Entry, sv *SpacesView, relPath, spacesPath string, 
 		if err != nil {
 			return fmt.Errorf("stat spaces: %w", err)
 		}
-		l.Info("creating spaces_view", "path", relPath, "inode", entry.Inode)
+		l.Debug("creating spaces_view", "path", relPath, "inode", entry.Inode)
 		return store.UpsertSpacesView(SpacesView{
 			EntryIno:    entry.Inode,
 			SyncedMtime: spInfo.ModTime().UnixNano(),
@@ -418,7 +433,7 @@ func p4(store *Store, entry *Entry, sv *SpacesView, relPath, spacesPath string, 
 			l.Debug("skip: no spaces_view", "path", relPath)
 			return nil
 		}
-		l.Info("removing stale spaces_view", "path", relPath, "inode", sv.EntryIno)
+		l.Debug("removing stale spaces_view", "path", relPath, "inode", sv.EntryIno)
 		return store.DeleteSpacesView(sv.EntryIno)
 	}
 
