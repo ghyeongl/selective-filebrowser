@@ -77,8 +77,6 @@ func (d *Daemon) Run(ctx context.Context) {
 			break
 		}
 
-		l.Debug("queue pop", "path", path, "queueLen", d.queue.Len())
-
 		hasQueued := func() bool {
 			return d.queue.Has(path)
 		}
@@ -89,8 +87,6 @@ func (d *Daemon) Run(ctx context.Context) {
 				break
 			}
 			l.Error("pipeline failed", "path", path, "err", err)
-		} else {
-			l.Debug("pipeline ok", "path", path)
 		}
 	}
 
@@ -177,7 +173,6 @@ func (d *Daemon) reconcileChildren(parentIno uint64, parentPath string) {
 
 		d.queue.Push(relPath)
 		d.pathCache.Set(child.Inode, relPath)
-		l.Debug("reconcile queued", "path", relPath, "inode", child.Inode, "type", child.Type)
 
 		if child.Type == "dir" {
 			d.reconcileChildren(child.Inode, relPath)

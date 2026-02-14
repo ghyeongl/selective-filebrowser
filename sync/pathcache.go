@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"log/slog"
 	gosync "sync"
 )
 
@@ -25,13 +24,6 @@ func (c *PathCache) Get(inode uint64) (string, bool) {
 	c.mu.RLock()
 	p, ok := c.paths[inode]
 	c.mu.RUnlock()
-	if logEnabled(slog.LevelDebug) {
-		if ok {
-			sub("pathcache").Debug("hit", "inode", inode, "path", p)
-		} else {
-			sub("pathcache").Debug("miss", "inode", inode)
-		}
-	}
 	return p, ok
 }
 
@@ -40,9 +32,6 @@ func (c *PathCache) Set(inode uint64, path string) {
 	c.mu.Lock()
 	c.paths[inode] = path
 	c.mu.Unlock()
-	if logEnabled(slog.LevelDebug) {
-		sub("pathcache").Debug("set", "inode", inode, "path", path)
-	}
 }
 
 // Invalidate removes the cached path for the given inode.
@@ -50,9 +39,6 @@ func (c *PathCache) Invalidate(inode uint64) {
 	c.mu.Lock()
 	delete(c.paths, inode)
 	c.mu.Unlock()
-	if logEnabled(slog.LevelDebug) {
-		sub("pathcache").Debug("invalidate", "inode", inode)
-	}
 }
 
 // Clear removes all cached paths.
