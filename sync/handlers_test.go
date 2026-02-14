@@ -159,6 +159,8 @@ func TestHandleStats(t *testing.T) {
 		Inode: 2, Name: "b.txt", Type: "text",
 		Size: ptr(int64(200)), Mtime: 1000, Selected: true,
 	}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 1, SyncedMtime: 1000, CheckedAt: 1000}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 2, SyncedMtime: 1000, CheckedAt: 1000}))
 
 	req := httptest.NewRequest("GET", "/api/sync/stats", nil)
 	w := httptest.NewRecorder()
