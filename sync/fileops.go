@@ -163,7 +163,7 @@ func SoftDelete(path, trashRoot string) (string, error) {
 			ext := filepath.Ext(base)
 			name := base[:len(base)-len(ext)]
 			trashPath = filepath.Join(dateDir, fmt.Sprintf("%s_%d%s", name, i, ext))
-			if _, err := os.Stat(trashPath); os.IsNotExist(err) {
+			if _, err := os.Stat(trashPath); err != nil {
 				break
 			}
 		}
