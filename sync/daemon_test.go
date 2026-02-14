@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDaemon_SeedAndReconcile(t *testing.T) {
+func TestDaemon_EnqueueAllAndPipeline(t *testing.T) {
 	dir := t.TempDir()
 	archivesRoot := filepath.Join(dir, "Archives")
 	spacesRoot := filepath.Join(dir, "Spaces")
@@ -34,7 +34,7 @@ func TestDaemon_SeedAndReconcile(t *testing.T) {
 
 	go daemon.Run(ctx)
 
-	// Give daemon time to seed, reconcile, and process
+	// Give daemon time to enqueue + process
 	time.Sleep(500 * time.Millisecond)
 	cancel()
 	time.Sleep(100 * time.Millisecond) // let it shut down
@@ -106,7 +106,7 @@ func TestDaemon_SpacesOnlyColdStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go daemon.Run(ctx)
 
-	// Wait for seed + reconcile + pipeline
+	// Wait for enqueueAll + pipeline
 	time.Sleep(2 * time.Second)
 	cancel()
 	time.Sleep(100 * time.Millisecond)

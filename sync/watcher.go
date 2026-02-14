@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"path/filepath"
@@ -20,6 +21,7 @@ type Watcher struct {
 	spacesRoot   string
 	queue        *EvalQueue
 	watcher      *fsnotify.Watcher
+	Overflow     chan struct{}
 }
 
 // NewWatcher creates a filesystem watcher for both roots.
@@ -34,6 +36,7 @@ func NewWatcher(archivesRoot, spacesRoot string, queue *EvalQueue) (*Watcher, er
 		spacesRoot:   spacesRoot,
 		queue:        queue,
 		watcher:      w,
+		Overflow:     make(chan struct{}, 1),
 	}, nil
 }
 
@@ -106,7 +109,15 @@ func (w *Watcher) Start(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			l.Error("watcher error", "err", err)
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				l.Warn("event overflow detected")
+				select {
+				case w.Overflow <- struct{}{}:
+				default:
+				}
+			} else {
+				l.Error("watcher error", "err", err)
+			}
 
 		case <-timer.C:
 			// Debounce timer fired — flush pending paths to queue

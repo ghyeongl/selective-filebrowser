@@ -554,7 +554,7 @@ func TestE2E_ColdStart_SpacesOnlyFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, "spoke-created.txt"), []byte("from spoke"), 0644))
 	})
 
-	// Archives should get the file via Seed phase 2 (SafeCopy S→A)
+	// Archives should get the file via P0: SafeCopy S→A
 	env.waitConverge(5*time.Second, func() bool {
 		return env.fileExistsArchive("spoke-created.txt")
 	})
@@ -1001,14 +1001,22 @@ func TestE2E_LostBothDeleted(t *testing.T) {
 
 func TestE2E_DaemonRestartDirtyState(t *testing.T) {
 	// Simulates: user selected → daemon killed before P3 could copy A→S.
-	// After restart: reconcile finds selected=true with no Spaces copy → P3 copies A→S.
+	// After restart: enqueueAll pushes file.txt → P3 copies A→S.
 
 	env := setupE2EWithoutDaemon(t, func(archivesRoot, spacesRoot string) {
 		require.NoError(t, os.WriteFile(filepath.Join(archivesRoot, "file.txt"), []byte("restart test"), 0644))
 	})
 
-	// First "boot": seed populates DB
-	require.NoError(t, Seed(env.store, env.archivesRoot, env.spacesRoot))
+	// First "boot": daemon populates DB via enqueueAll + pipeline
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	go env.daemon.Run(ctx1)
+
+	waitFor(t, 5*time.Second, func() bool {
+		entries, _ := env.store.ListChildren(0)
+		return len(entries) >= 1
+	})
+	cancel1()
+	time.Sleep(200 * time.Millisecond)
 
 	// Simulate crash: user selected, but daemon died before P3 ran
 	entries, err := env.store.ListChildren(0)
@@ -1019,23 +1027,11 @@ func TestE2E_DaemonRestartDirtyState(t *testing.T) {
 	// Verify dirty state: selected=true but no Spaces copy
 	assert.False(t, fileExists(filepath.Join(env.spacesRoot, "file.txt")))
 
-	// "Second boot": start worker + reconcile (bypasses Seed to avoid PK collision)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		done := ctx.Done()
-		for {
-			path, ok := env.daemon.queue.Pop(done)
-			if !ok {
-				return
-			}
-			hasQueued := func() bool { return env.daemon.queue.Has(path) }
-			RunPipeline(ctx, path, env.store, env.archivesRoot, env.spacesRoot, env.daemon.trashRoot, hasQueued)
-		}
-	}()
-
-	env.daemon.fullReconcile()
+	// "Second boot": new daemon on same store — enqueueAll + pipeline handles recovery
+	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	go daemon2.Run(ctx2)
 
 	// P3 should copy A→S
 	waitFor(t, 10*time.Second, func() bool {
@@ -1056,8 +1052,16 @@ func TestE2E_DaemonRestart_OrphanSpacesView(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(archivesRoot, "file.txt"), []byte("orphan test"), 0644))
 	})
 
-	// First "boot": seed populates DB
-	require.NoError(t, Seed(env.store, env.archivesRoot, env.spacesRoot))
+	// First "boot": daemon populates DB via enqueueAll + pipeline
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	go env.daemon.Run(ctx1)
+
+	waitFor(t, 5*time.Second, func() bool {
+		entries, _ := env.store.ListChildren(0)
+		return len(entries) >= 1
+	})
+	cancel1()
+	time.Sleep(200 * time.Millisecond)
 
 	// Simulate orphan: add spaces_view without actual Spaces file
 	entries, err := env.store.ListChildren(0)
@@ -1075,23 +1079,11 @@ func TestE2E_DaemonRestart_OrphanSpacesView(t *testing.T) {
 	sv, _ := env.store.GetSpacesView(ino)
 	require.NotNil(t, sv)
 
-	// "Second boot": start worker + reconcile
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		done := ctx.Done()
-		for {
-			path, ok := env.daemon.queue.Pop(done)
-			if !ok {
-				return
-			}
-			hasQueued := func() bool { return env.daemon.queue.Has(path) }
-			RunPipeline(ctx, path, env.store, env.archivesRoot, env.spacesRoot, env.daemon.trashRoot, hasQueued)
-		}
-	}()
-
-	env.daemon.fullReconcile()
+	// "Second boot": new daemon on same store — enqueueAll + pipeline handles orphan cleanup
+	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	go daemon2.Run(ctx2)
 
 	// P4 should clean up orphan spaces_view
 	waitFor(t, 10*time.Second, func() bool {
@@ -1106,12 +1098,12 @@ func TestE2E_DaemonRestart_OrphanSpacesView(t *testing.T) {
 }
 
 func TestE2E_DaemonRestart_SpacesOnlyFile(t *testing.T) {
-	// Only Spaces has the file, DB is empty — Seed phase 2: SafeCopy S→A + INSERT
+	// Only Spaces has the file, DB is empty — P0: SafeCopy S→A + P1: INSERT
 	env := setupE2E(t, func(archivesRoot, spacesRoot string) {
 		require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, "newfile.txt"), []byte("spaces only"), 0644))
 	})
 
-	// Wait for Archives file to be created (Seed phase 2: SafeCopy S→A)
+	// Wait for Archives file to be created (P0: SafeCopy S→A)
 	env.waitConverge(5*time.Second, func() bool {
 		return env.fileExistsArchive("newfile.txt")
 	})

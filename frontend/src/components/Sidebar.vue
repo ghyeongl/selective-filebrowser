@@ -85,7 +85,11 @@
       </router-link>
     </template>
 
-    <div v-if="isFiles && syncStats" class="storage-info">
+    <div
+      class="credits"
+      v-if="isFiles && syncStats"
+      style="width: 90%; margin: 2em 2.5em 3em 2.5em"
+    >
       <progress-bar
         :max="syncStats.diskTotal"
         :segments="storageSegments"
@@ -93,13 +97,12 @@
         bg-color="#e9ecef"
         :bar-border-radius="3"
       />
-      <div class="storage-summary">
-        {{ diskUsedLabel }} of {{ diskTotalLabel }} used
-      </div>
+      <br />
+      {{ diskUsedLabel }} of {{ diskTotalLabel }} used
       <div class="seg-legend">
-        <div><i class="dot archives"></i>Archives: {{ archivesLabel }}</div>
-        <div><i class="dot spaces"></i>Spaces: {{ spacesLabel }}</div>
-        <div><i class="dot other"></i>Other: {{ otherLabel }}</div>
+        <div><i class="dot" style="background:#4dabf7"></i>Archives: {{ archivesLabel }}</div>
+        <div><i class="dot" style="background:#40c057"></i>Spaces: {{ spacesLabel }}</div>
+        <div><i class="dot" style="background:#868e96"></i>Other: {{ otherLabel }}</div>
       </div>
     </div>
 
@@ -232,17 +235,6 @@ export default {
 </script>
 
 <style scoped>
-.storage-info {
-  padding: 1em 2.5em 0;
-  margin: 1.5em 0 1em;
-}
-
-.storage-summary {
-  font-size: 0.75em;
-  color: #868e96;
-  margin-top: 4px;
-}
-
 .seg-legend {
   font-size: 0.7em;
   color: #868e96;
@@ -257,17 +249,5 @@ export default {
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: middle;
-}
-
-.dot.archives {
-  background: #4dabf7;
-}
-
-.dot.spaces {
-  background: #40c057;
-}
-
-.dot.other {
-  background: #868e96;
 }
 </style>

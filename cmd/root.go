@@ -251,18 +251,22 @@ user created with the credentials from options "username" and "password".`,
 		// Set up sync daemon if paths are configured
 		var syncHandlers *ssync.Handlers
 		if server.ArchivesPath != "" && server.SpacesPath != "" {
-			syncLogPath := v.GetString("syncLog")
-			if syncLogPath != "" && syncLogPath != "false" {
-				if syncLogPath == "true" {
-					syncLogPath = "log/sync.log" // legacy bool compat
+			if v.IsSet("syncLog") {
+				syncLogPath := v.GetString("syncLog")
+				if syncLogPath != "" && syncLogPath != "false" {
+					if syncLogPath == "true" {
+						syncLogPath = "log/sync.log"
+					}
+					os.MkdirAll(filepath.Dir(syncLogPath), 0755)
+					ssync.InitLogger(&lumberjack.Logger{
+						Filename:   syncLogPath,
+						MaxSize:    100,
+						MaxAge:     14,
+						MaxBackups: 10,
+					})
+				} else {
+					ssync.InitLogger(nil)
 				}
-				os.MkdirAll(filepath.Dir(syncLogPath), 0755)
-				ssync.InitLogger(&lumberjack.Logger{
-					Filename:   syncLogPath,
-					MaxSize:    100,
-					MaxAge:     14,
-					MaxBackups: 10,
-				})
 			} else {
 				ssync.InitLogger(nil)
 			}
