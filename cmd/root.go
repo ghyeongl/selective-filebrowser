@@ -257,7 +257,10 @@ user created with the credentials from options "username" and "password".`,
 					if syncLogPath == "true" {
 						syncLogPath = "log/sync.log"
 					}
-					os.MkdirAll(filepath.Dir(syncLogPath), 0755)
+					os.MkdirAll(filepath.Dir(syncLogPath), 0750)
+					if f, err := os.OpenFile(syncLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640); err == nil {
+						f.Close()
+					}
 					ssync.InitLogger(&lumberjack.Logger{
 						Filename:   syncLogPath,
 						MaxSize:    100,
@@ -441,6 +444,10 @@ func logWriter(logMethod string) io.Writer {
 	case "":
 		return io.Discard
 	default:
+		os.MkdirAll(filepath.Dir(logMethod), 0750)
+		if f, err := os.OpenFile(logMethod, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640); err == nil {
+			f.Close()
+		}
 		return &lumberjack.Logger{
 			Filename:   logMethod,
 			MaxSize:    100,

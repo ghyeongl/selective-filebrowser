@@ -258,20 +258,23 @@ func (s *Store) DeleteSpacesView(entryIno uint64) error {
 	return nil
 }
 
-// AggregateSelectedSize returns the total size of all selected file entries.
-func (s *Store) AggregateSelectedSize() (int64, error) {
+// AggregateSyncedSize returns the total size of entries actually synced to Spaces.
+func (s *Store) AggregateSyncedSize() (int64, error) {
 	var total sql.NullInt64
 	err := s.db.QueryRow(`
-		SELECT SUM(size) FROM entries WHERE selected = 1 AND type != 'dir'
+		SELECT COALESCE(SUM(e.size), 0)
+		FROM entries e
+		JOIN spaces_view sv ON e.inode = sv.entry_ino
+		WHERE e.type != 'dir'
 	`).Scan(&total)
 	if err != nil {
-		return 0, fmt.Errorf("aggregate selected size: %w", err)
+		return 0, fmt.Errorf("aggregate synced size: %w", err)
 	}
 	if !total.Valid {
-		sub("store").Debug("AggregateSelectedSize", "total", 0)
+		sub("store").Debug("AggregateSyncedSize", "total", 0)
 		return 0, nil
 	}
-	sub("store").Debug("AggregateSelectedSize", "total", total.Int64)
+	sub("store").Debug("AggregateSyncedSize", "total", total.Int64)
 	return total.Int64, nil
 }
 

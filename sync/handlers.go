@@ -261,7 +261,7 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spacesSize, err := h.store.AggregateSelectedSize()
+	spacesSize, err := h.store.AggregateSyncedSize()
 	if err != nil {
 		l.Error("stats failed", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

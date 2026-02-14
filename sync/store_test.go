@@ -281,7 +281,7 @@ func TestSpacesView_CRUD(t *testing.T) {
 	assert.Nil(t, sv)
 }
 
-func TestAggregateSelectedSize(t *testing.T) {
+func TestAggregateSyncedSize(t *testing.T) {
 	store := setupTestDB(t)
 
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "dir", Type: "dir", Mtime: 1000, Selected: true}))
@@ -289,9 +289,13 @@ func TestAggregateSelectedSize(t *testing.T) {
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: 1, Name: "b.txt", Type: "text", Size: ptr(int64(200)), Mtime: 1000, Selected: true}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, Name: "unsel.txt", Type: "text", Size: ptr(int64(999)), Mtime: 1000, Selected: false}))
 
-	total, err := store.AggregateSelectedSize()
+	// Create spaces_view for synced entries (a.txt and b.txt)
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 2, SyncedMtime: 1000, CheckedAt: 1000}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 3, SyncedMtime: 1000, CheckedAt: 1000}))
+
+	total, err := store.AggregateSyncedSize()
 	require.NoError(t, err)
-	assert.Equal(t, int64(300), total) // 100 + 200, dir excluded
+	assert.Equal(t, int64(300), total) // 100 + 200, dir excluded, unsynced excluded
 }
 
 func TestChildCounts(t *testing.T) {

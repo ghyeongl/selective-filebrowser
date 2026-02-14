@@ -358,7 +358,7 @@ func TestE2E_Edge_RecursiveSelect(t *testing.T) {
 	assert.False(t, e.Selected, "deeply nested file should be deselected")
 }
 
-// AggregateSelectedSize accuracy
+// AggregateSyncedSize accuracy
 func TestE2E_Edge_AggregateSize(t *testing.T) {
 	store := setupTestDB(t)
 
@@ -367,9 +367,13 @@ func TestE2E_Edge_AggregateSize(t *testing.T) {
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, Name: "c.txt", Type: "text", Size: ptr(int64(500)), Mtime: 1, Selected: false}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, Name: "dir", Type: "dir", Mtime: 1, Selected: true}))
 
-	total, err := store.AggregateSelectedSize()
+	// Only a.txt and b.txt are synced to Spaces
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 1, SyncedMtime: 1, CheckedAt: 1}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 2, SyncedMtime: 1, CheckedAt: 1}))
+
+	total, err := store.AggregateSyncedSize()
 	require.NoError(t, err)
-	assert.Equal(t, int64(3000), total, "only selected files, not dirs")
+	assert.Equal(t, int64(3000), total, "only synced files, not dirs")
 }
 
 // UNIQUE(parent_ino, name) conflict: rm + touch with new inode (non-nil parent)

@@ -27,19 +27,11 @@ func (q *EvalQueue) Push(path string) {
 	q.mu.Lock()
 	if _, exists := q.set[path]; exists {
 		q.mu.Unlock()
-		if logEnabled(slog.LevelDebug) {
-			sub("queue").Debug("push dedup", "path", path)
-		}
 		return
 	}
 	q.set[path] = struct{}{}
 	q.order = append(q.order, path)
-	newLen := len(q.order)
 	q.mu.Unlock()
-
-	if logEnabled(slog.LevelDebug) {
-		sub("queue").Debug("push", "path", path, "queueLen", newLen)
-	}
 
 	// Non-blocking signal
 	select {
@@ -84,11 +76,7 @@ func (q *EvalQueue) Pop(done <-chan struct{}) (string, bool) {
 			path := q.order[0]
 			q.order = q.order[1:]
 			delete(q.set, path)
-			remaining := len(q.order)
 			q.mu.Unlock()
-			if logEnabled(slog.LevelDebug) {
-				sub("queue").Debug("pop", "path", path, "queueLen", remaining)
-			}
 			return path, true
 		}
 		q.mu.Unlock()
