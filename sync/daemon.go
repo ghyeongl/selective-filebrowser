@@ -93,7 +93,7 @@ func (d *Daemon) Run(ctx context.Context) {
 		}
 
 		processed++
-		if time.Since(lastLog) >= 30*time.Second {
+		if time.Since(lastLog) >= 10*time.Minute {
 			l.Info("worker progress", "processed", processed, "remaining", d.queue.Len())
 			lastLog = time.Now()
 		}
