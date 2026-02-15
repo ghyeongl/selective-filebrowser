@@ -156,22 +156,33 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath, archivePath, spacesPath string, state State, hasQueued func() bool) error {
 	l := sub("P0")
 	if state.SDisk {
-		// S_disk=1 → copy S→A to recover
+		// S_disk=1 → recover from Spaces
 		l.Debug("recovering from Spaces", "path", relPath)
-		if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
-			return err
+		srcInfo, err := os.Stat(spacesPath)
+		if err != nil {
+			return fmt.Errorf("stat spaces for recovery: %w", err)
 		}
-		l.Debug("SafeCopy S->A done", "path", relPath)
-		// Update entries mtime/size if entry exists
-		if entry != nil {
-			info, err := os.Stat(archivePath)
-			if err == nil {
-				if err := store.UpdateEntryMtime(entry.Inode, info.ModTime().UnixNano(), ptrInt64(info.Size())); err != nil {
-					return fmt.Errorf("update entry after recovery: %w", err)
+		if srcInfo.IsDir() {
+			if err := os.MkdirAll(archivePath, 0755); err != nil {
+				return fmt.Errorf("mkdir archive recovery: %w", err)
+			}
+			l.Debug("mkdir recovery done", "path", relPath)
+		} else {
+			if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
+				return err
+			}
+			l.Debug("SafeCopy S->A done", "path", relPath)
+			// Update entries mtime/size if entry exists (only for files)
+			if entry != nil {
+				info, err := os.Stat(archivePath)
+				if err == nil {
+					if err := store.UpdateEntryMtime(entry.Inode, info.ModTime().UnixNano(), ptrInt64(info.Size())); err != nil {
+						return fmt.Errorf("update entry after recovery: %w", err)
+					}
+					l.Debug("updated mtime after recovery", "inode", entry.Inode)
+				} else {
+					l.Warn("stat failed after recovery", "path", archivePath, "err", err)
 				}
-				l.Debug("updated mtime after recovery", "inode", entry.Inode)
-			} else {
-				l.Warn("stat failed after recovery", "path", archivePath, "err", err)
 			}
 		}
 		return nil
