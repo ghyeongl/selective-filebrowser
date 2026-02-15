@@ -22,7 +22,7 @@ func setupHandlersEnv(t *testing.T) (*Handlers, *Store, string, string) {
 	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
 
 	store := setupTestDB(t)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 	handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 	return handlers, store, archivesRoot, spacesRoot
 }

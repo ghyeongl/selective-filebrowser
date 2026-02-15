@@ -4,7 +4,6 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -15,19 +14,22 @@ type Daemon struct {
 	archivesRoot string
 	spacesRoot   string
 	trashRoot    string
+	ignore       *SyncIgnore
 	queue        *EvalQueue
 	pathCache    *PathCache
 	scanning     atomic.Bool
 }
 
 // NewDaemon creates a new sync daemon.
-func NewDaemon(store *Store, archivesRoot, spacesRoot string) *Daemon {
-	trashRoot := filepath.Join(filepath.Dir(spacesRoot), ".trash")
+func NewDaemon(store *Store, archivesRoot, spacesRoot, configDir string) *Daemon {
+	trashRoot := filepath.Join(spacesRoot, ".trash")
+	ignore := LoadSyncIgnore(filepath.Join(configDir, ".syncignore"))
 	return &Daemon{
 		store:        store,
 		archivesRoot: archivesRoot,
 		spacesRoot:   spacesRoot,
 		trashRoot:    trashRoot,
+		ignore:       ignore,
 		queue:        NewEvalQueue(),
 		pathCache:    NewPathCache(),
 	}
@@ -45,7 +47,7 @@ func (d *Daemon) Run(ctx context.Context) {
 	l.Info("sync daemon starting", "archives", d.archivesRoot, "spaces", d.spacesRoot, "trash", d.trashRoot)
 
 	// Start watcher first so we don't miss events during enqueue
-	watcher, err := NewWatcher(d.archivesRoot, d.spacesRoot, d.queue)
+	watcher, err := NewWatcher(d.archivesRoot, d.spacesRoot, d.queue, d.ignore)
 	if err != nil {
 		l.Error("watcher creation failed, daemon aborting", "err", err)
 		return
@@ -117,11 +119,11 @@ func (d *Daemon) enqueueAll() {
 	l.Info("enqueueAll starting")
 
 	// Disk walk: Archives (WalkDir visits parents before children → FIFO preserves order)
-	aCount := walkAndEnqueue(d.archivesRoot, d.queue)
+	aCount := walkAndEnqueue(d.archivesRoot, d.queue, d.ignore)
 	l.Info("enqueueAll archives walked", "count", aCount)
 
 	// Disk walk: Spaces (queue deduplicates)
-	sCount := walkAndEnqueue(d.spacesRoot, d.queue)
+	sCount := walkAndEnqueue(d.spacesRoot, d.queue, d.ignore)
 	l.Info("enqueueAll spaces walked", "count", sCount)
 
 	// DB walk: catch entries where both disks are empty (#5~#8)
@@ -131,8 +133,8 @@ func (d *Daemon) enqueueAll() {
 }
 
 // walkAndEnqueue walks a directory tree and pushes relative paths to the queue.
-// Skips hidden files/dirs and .sync-conflict files (same rules as ScanDir/Watcher).
-func walkAndEnqueue(root string, queue *EvalQueue) int {
+// Entries matching the SyncIgnore patterns are skipped.
+func walkAndEnqueue(root string, queue *EvalQueue, ignore *SyncIgnore) int {
 	l := sub("daemon")
 	count := 0
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -144,14 +146,10 @@ func walkAndEnqueue(root string, queue *EvalQueue) int {
 			return nil
 		}
 
-		name := d.Name()
-		if strings.HasPrefix(name, ".") {
+		if ignore.IsIgnored(d.Name(), d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
-			return nil
-		}
-		if strings.Contains(name, ".sync-conflict-") {
 			return nil
 		}
 

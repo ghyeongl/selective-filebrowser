@@ -21,7 +21,7 @@ func TestScanDir_BasicTree(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Documents", "readme.txt"), []byte("hello"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "photo.jpg"), []byte("fake-jpg"), 0644))
 
-	result, err := ScanDir(dir)
+	result, err := ScanDir(dir, nil)
 	require.NoError(t, err)
 
 	assert.Len(t, result, 3) // Documents/, Documents/readme.txt, photo.jpg
@@ -46,13 +46,21 @@ func TestScanDir_BasicTree(t *testing.T) {
 	assert.False(t, photoStat.IsDir)
 }
 
-func TestScanDir_SkipsSyncConflict(t *testing.T) {
+func TestScanDir_SyncIgnorePatterns(t *testing.T) {
 	dir := t.TempDir()
+
+	// Create .syncignore with patterns
+	cfgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, ".syncignore"), []byte(".trash\n*.sync-tmp\n*.sync-conflict-*\n"), 0644))
+	ignore := LoadSyncIgnore(filepath.Join(cfgDir, ".syncignore"))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("ok"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.sync-conflict-20240101-123456.txt"), []byte("conflict"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "temp.sync-tmp"), []byte("tmp"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".trash"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".trash", "deleted.txt"), []byte("x"), 0644))
 
-	result, err := ScanDir(dir)
+	result, err := ScanDir(dir, ignore)
 	require.NoError(t, err)
 
 	assert.Len(t, result, 1)
@@ -60,7 +68,7 @@ func TestScanDir_SkipsSyncConflict(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestScanDir_SkipsHiddenFiles(t *testing.T) {
+func TestScanDir_HiddenFilesIncluded(t *testing.T) {
 	dir := t.TempDir()
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("ok"), 0644))
@@ -68,18 +76,22 @@ func TestScanDir_SkipsHiddenFiles(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".hiddendir"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".hiddendir", "inside.txt"), []byte("x"), 0644))
 
-	result, err := ScanDir(dir)
+	result, err := ScanDir(dir, nil)
 	require.NoError(t, err)
 
-	assert.Len(t, result, 1)
+	assert.Len(t, result, 4) // visible.txt, .hidden, .hiddendir/, .hiddendir/inside.txt
 	_, ok := result["visible.txt"]
+	assert.True(t, ok)
+	_, ok = result[".hidden"]
+	assert.True(t, ok)
+	_, ok = result[".hiddendir"]
 	assert.True(t, ok)
 }
 
 func TestScanDir_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 
-	result, err := ScanDir(dir)
+	result, err := ScanDir(dir, nil)
 	require.NoError(t, err)
 	assert.Empty(t, result)
 }

@@ -19,12 +19,13 @@ type Watcher struct {
 	archivesRoot string
 	spacesRoot   string
 	queue        *EvalQueue
+	ignore       *SyncIgnore
 	watcher      *fsnotify.Watcher
 	Overflow     chan struct{}
 }
 
 // NewWatcher creates a filesystem watcher for both roots.
-func NewWatcher(archivesRoot, spacesRoot string, queue *EvalQueue) (*Watcher, error) {
+func NewWatcher(archivesRoot, spacesRoot string, queue *EvalQueue, ignore *SyncIgnore) (*Watcher, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -34,6 +35,7 @@ func NewWatcher(archivesRoot, spacesRoot string, queue *EvalQueue) (*Watcher, er
 		archivesRoot: archivesRoot,
 		spacesRoot:   spacesRoot,
 		queue:        queue,
+		ignore:       ignore,
 		watcher:      w,
 		Overflow:     make(chan struct{}, 1),
 	}, nil
@@ -76,9 +78,9 @@ func (w *Watcher) Start(ctx context.Context) error {
 				continue
 			}
 
-			// Skip .sync-conflict, .sync-tmp, and hidden files
+			// Skip entries matching .syncignore patterns
 			base := filepath.Base(event.Name)
-			if strings.HasPrefix(base, ".") || strings.Contains(base, ".sync-conflict-") || strings.HasSuffix(base, ".sync-tmp") {
+			if w.ignore.IsIgnored(base, false) {
 				continue
 			}
 
@@ -142,8 +144,7 @@ func (w *Watcher) addRecursive(root string) error {
 			return nil // skip inaccessible dirs
 		}
 		if d.IsDir() {
-			base := filepath.Base(path)
-			if strings.HasPrefix(base, ".") && path != root {
+			if path != root && w.ignore.IsIgnored(d.Name(), true) {
 				return filepath.SkipDir
 			}
 			if err := w.watcher.Add(path); err != nil {

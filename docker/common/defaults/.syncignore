@@ -1,0 +1,5 @@
+# Sync ignore patterns (name-based, filepath.Match syntax)
+# Lines starting with # are comments. Trailing / means directory-only.
+.trash
+*.sync-tmp
+*.sync-conflict-*

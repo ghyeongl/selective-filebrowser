@@ -27,7 +27,7 @@ func TestDaemon_EnqueueAllAndPipeline(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, "a.txt"), []byte("a"), 0644))
 
 	store := setupTestDB(t)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 
 	// Run with a short-lived context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -60,7 +60,7 @@ func TestDaemon_WatcherDetectsNewFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
 
 	store := setupTestDB(t)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,7 +101,7 @@ func TestDaemon_SpacesOnlyColdStart(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, "spoke.txt"), []byte("from spoke"), 0644))
 
 	store := setupTestDB(t)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go daemon.Run(ctx)

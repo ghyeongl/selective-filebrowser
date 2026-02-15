@@ -4,6 +4,9 @@
 if [ ! -f "/config/settings.json" ]; then
   cp -a /defaults/settings.json /config/settings.json
 fi
+if [ ! -f "/config/.syncignore" ]; then
+  cp -a /defaults/.syncignore /config/.syncignore
+fi
 
 # Ensure sync directories exist
 mkdir -p /archives /spaces /log
@@ -11,6 +14,7 @@ mkdir -p /archives /spaces /log
 # permissions
 chown abc:abc \
 	/config/settings.json \
+	/config/.syncignore \
 	/database \
 	/srv \
 	/archives \

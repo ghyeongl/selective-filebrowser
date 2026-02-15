@@ -63,7 +63,7 @@ func setupE2E(t *testing.T, preSetup func(archivesRoot, spacesRoot string)) *e2e
 	require.NoError(t, err)
 
 	store := NewStore(db)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 	handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 
 	// HTTP server
@@ -123,7 +123,7 @@ func setupE2EWithoutDaemon(t *testing.T, preSetup func(archivesRoot, spacesRoot 
 	require.NoError(t, err)
 
 	store := NewStore(db)
-	daemon := NewDaemon(store, archivesRoot, spacesRoot)
+	daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 	handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 
 	mux := http.NewServeMux()
@@ -1028,7 +1028,7 @@ func TestE2E_DaemonRestartDirtyState(t *testing.T) {
 	assert.False(t, fileExists(filepath.Join(env.spacesRoot, "file.txt")))
 
 	// "Second boot": new daemon on same store — enqueueAll + pipeline handles recovery
-	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot)
+	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot, t.TempDir())
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	go daemon2.Run(ctx2)
@@ -1080,7 +1080,7 @@ func TestE2E_DaemonRestart_OrphanSpacesView(t *testing.T) {
 	require.NotNil(t, sv)
 
 	// "Second boot": new daemon on same store — enqueueAll + pipeline handles orphan cleanup
-	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot)
+	daemon2 := NewDaemon(env.store, env.archivesRoot, env.spacesRoot, t.TempDir())
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	go daemon2.Run(ctx2)
@@ -1353,7 +1353,7 @@ func TestE2E_StatusLabels(t *testing.T) {
 			store := NewStore(db)
 			tt.setup(t, store, archivesRoot, spacesRoot)
 
-			daemon := NewDaemon(store, archivesRoot, spacesRoot)
+			daemon := NewDaemon(store, archivesRoot, spacesRoot, t.TempDir())
 			handlers := NewHandlers(store, daemon, archivesRoot, spacesRoot)
 			req := httptest.NewRequest("GET", "/api/sync/entries", nil)
 			w := httptest.NewRecorder()

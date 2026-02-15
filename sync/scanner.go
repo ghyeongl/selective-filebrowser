@@ -18,8 +18,8 @@ type FileStat struct {
 }
 
 // ScanDir walks a directory tree and returns FileStat for each entry.
-// relativeTo is used for path-based matching (the returned paths are relative).
-func ScanDir(root string) (map[string]FileStat, error) {
+// Entries matching the SyncIgnore patterns are skipped.
+func ScanDir(root string, ignore *SyncIgnore) (map[string]FileStat, error) {
 	l := sub("scanner")
 	l.Debug("scan start", "root", root)
 	result := make(map[string]FileStat)
@@ -35,13 +35,8 @@ func ScanDir(root string) (map[string]FileStat, error) {
 			return nil
 		}
 
-		// Skip .sync-conflict and .sync-tmp files
-		if strings.Contains(d.Name(), ".sync-conflict-") || strings.HasSuffix(d.Name(), ".sync-tmp") {
-			return nil
-		}
-
-		// Skip hidden files/dirs
-		if strings.HasPrefix(d.Name(), ".") {
+		// Skip entries matching .syncignore patterns
+		if ignore.IsIgnored(d.Name(), d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

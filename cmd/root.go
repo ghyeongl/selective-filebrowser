@@ -282,7 +282,8 @@ user created with the credentials from options "username" and "password".`,
 			defer syncDB.Close()
 
 			syncStore := ssync.NewStore(syncDB)
-			syncDaemon := ssync.NewDaemon(syncStore, server.ArchivesPath, server.SpacesPath)
+			configDir := filepath.Dir(v.ConfigFileUsed())
+			syncDaemon := ssync.NewDaemon(syncStore, server.ArchivesPath, server.SpacesPath, configDir)
 			syncHandlers = ssync.NewHandlers(syncStore, syncDaemon, server.ArchivesPath, server.SpacesPath)
 
 			syncCtx, syncCancel := context.WithCancel(context.Background())
