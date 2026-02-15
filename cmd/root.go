@@ -555,7 +555,11 @@ func quickSetup(v *viper.Viper, s *storage.Storage) error {
 			return err
 		}
 	} else {
-		log.Printf("User '%s' initialize wth user-provided password\n", username)
+		log.Printf("User '%s' initialized with provided password\n", username)
+		password, err = users.ValidateAndHashPwd(password, set.MinimumPasswordLength)
+		if err != nil {
+			return err
+		}
 	}
 
 	if username == "" || password == "" {

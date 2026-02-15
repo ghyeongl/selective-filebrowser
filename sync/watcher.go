@@ -76,9 +76,9 @@ func (w *Watcher) Start(ctx context.Context) error {
 				continue
 			}
 
-			// Skip .sync-conflict and hidden files
+			// Skip .sync-conflict, .sync-tmp, and hidden files
 			base := filepath.Base(event.Name)
-			if strings.HasPrefix(base, ".") || strings.Contains(base, ".sync-conflict-") {
+			if strings.HasPrefix(base, ".") || strings.Contains(base, ".sync-conflict-") || strings.HasSuffix(base, ".sync-tmp") {
 				continue
 			}
 

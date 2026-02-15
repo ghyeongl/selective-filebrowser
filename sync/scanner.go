@@ -35,8 +35,8 @@ func ScanDir(root string) (map[string]FileStat, error) {
 			return nil
 		}
 
-		// Skip .sync-conflict files
-		if strings.Contains(d.Name(), ".sync-conflict-") {
+		// Skip .sync-conflict and .sync-tmp files
+		if strings.Contains(d.Name(), ".sync-conflict-") || strings.HasSuffix(d.Name(), ".sync-tmp") {
 			return nil
 		}
 

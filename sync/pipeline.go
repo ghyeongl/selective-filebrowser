@@ -13,13 +13,6 @@ import (
 func logState(l *slog.Logger, msg, relPath string, state State) {
 	l.Debug(msg,
 		"path", relPath,
-		"A_disk", state.ADisk,
-		"A_db", state.ADb,
-		"S_disk", state.SDisk,
-		"S_db", state.SDb,
-		"selected", state.Selected,
-		"A_dirty", state.ADirty,
-		"S_dirty", state.SDirty,
 		"scenario", state.Scenario(),
 		"status", state.UIStatus(),
 	)
@@ -49,7 +42,9 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 	scenario := state.Scenario()
 
 	switch scenario {
-	case 1, 15, 31:
+	case 1:
+		return nil
+	case 15, 31:
 		// no-op: skip
 	default:
 		l.Debug("pipeline evaluated", "path", relPath, "scenario", scenario)
