@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // SyncEntryResponse is a single entry in the API response.
@@ -360,6 +361,9 @@ func (h *Handlers) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	ch := h.daemon.Events().Subscribe()
 	defer h.daemon.Events().Unsubscribe(ch)
 
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
@@ -368,6 +372,9 @@ func (h *Handlers) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		case event := <-ch:
 			data, _ := json.Marshal(event)
 			fmt.Fprintf(w, "data: %s\n\n", data) //nolint:errcheck
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprintf(w, ": heartbeat\n\n") //nolint:errcheck
 			flusher.Flush()
 		}
 	}
