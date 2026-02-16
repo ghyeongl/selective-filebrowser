@@ -18,6 +18,7 @@ type Daemon struct {
 	ignore       *SyncIgnore
 	queue        *EvalQueue
 	pathCache    *PathCache
+	events       *EventBus
 	scanning     atomic.Bool
 }
 
@@ -33,12 +34,18 @@ func NewDaemon(store *Store, archivesRoot, spacesRoot, configDir string) *Daemon
 		ignore:       ignore,
 		queue:        NewEvalQueue(),
 		pathCache:    NewPathCache(),
+		events:       NewEventBus(),
 	}
 }
 
 // Queue returns the eval queue, used by HTTP handlers to push select/deselect events.
 func (d *Daemon) Queue() *EvalQueue {
 	return d.queue
+}
+
+// Events returns the event bus for SSE broadcasting.
+func (d *Daemon) Events() *EventBus {
+	return d.events
 }
 
 // Run starts the daemon. It starts the watcher, enqueues all paths for initial
@@ -102,6 +109,7 @@ func (d *Daemon) Run(ctx context.Context) {
 			}
 			l.Warn("pipeline failed, rolling back", "path", path, "err", err)
 			d.rollbackState(path)
+			d.emitStatus(path)
 
 			// Retry after 5s (e.g. HDD spin-up)
 			select {
@@ -121,9 +129,11 @@ func (d *Daemon) Run(ctx context.Context) {
 				}
 				l.Error("pipeline retry failed, rollback maintained", "path", path, "err", err2)
 				d.rollbackState(path)
+				d.emitStatus(path)
 			}
 		}
 
+		d.emitStatus(path)
 		processed++
 		if time.Since(lastLog) >= 10*time.Minute {
 			l.Info("worker progress", "processed", processed, "remaining", d.queue.Len())
@@ -176,6 +186,23 @@ func (d *Daemon) rollbackState(relPath string) {
 	} else if !spacesExists && sv != nil {
 		d.store.DeleteSpacesView(sv.EntryIno)
 	}
+}
+
+// emitStatus publishes the current status of a path to SSE clients.
+func (d *Daemon) emitStatus(relPath string) {
+	entry, sv, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil || entry == nil {
+		return
+	}
+	aMtime, _, _, _ := statFile(filepath.Join(d.archivesRoot, relPath))
+	sMtime, _, _, _ := statFile(filepath.Join(d.spacesRoot, relPath))
+	state := ComputeState(entry, sv, aMtime, sMtime)
+	d.events.Publish(SyncEvent{
+		Type:   "status",
+		Inode:  entry.Inode,
+		Name:   entry.Name,
+		Status: state.UIStatus(),
+	})
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.

@@ -1,4 +1,5 @@
 import { fetchJSON, fetchURL } from "./utils";
+import { baseURL } from "@/utils/constants";
 
 export interface SyncEntry {
   inode: number;
@@ -52,4 +53,24 @@ export async function deselectEntries(inodes: number[]): Promise<void> {
 
 export async function getStats(): Promise<SyncStats> {
   return fetchJSON<SyncStats>("/api/sync/stats");
+}
+
+export interface SyncEvent {
+  type: string;
+  inode: number;
+  name: string;
+  status: string;
+}
+
+export function connectSSE(
+  onEvent: (event: SyncEvent) => void
+): EventSource {
+  const es = new EventSource(`${baseURL}/api/sync/events`);
+
+  es.onmessage = (e) => {
+    const event: SyncEvent = JSON.parse(e.data);
+    onEvent(event);
+  };
+
+  return es;
 }

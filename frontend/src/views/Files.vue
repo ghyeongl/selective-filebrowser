@@ -90,6 +90,7 @@ const currentView = computed(() => {
 // Define hooks
 onMounted(() => {
   fetchData();
+  syncStore.connectEvents();
   fileStore.isFiles = true;
   window.addEventListener("keydown", keyEvent);
 });
@@ -99,6 +100,7 @@ onBeforeUnmount(() => {
 });
 
 onUnmounted(() => {
+  syncStore.disconnectEvents();
   fileStore.isFiles = false;
   if (layoutStore.showShell) {
     layoutStore.toggleShell();

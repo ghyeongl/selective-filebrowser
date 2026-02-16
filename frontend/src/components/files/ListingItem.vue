@@ -22,8 +22,9 @@
     :data-ext="getExtension(name).toLowerCase()"
     @contextmenu="contextMenu"
   >
+    <span v-if="isToggling" class="sync-spinner"></span>
     <SyncCheckbox
-      v-if="syncEntry"
+      v-else-if="syncEntry"
       :selected="syncEntry.selected"
       :childTotalCount="syncEntry.childTotalCount"
       :childSelectedCount="syncEntry.childSelectedCount"
@@ -106,6 +107,12 @@ const syncStore = useSyncStore();
 
 const syncEntry = computed<SyncEntry | undefined>(() => {
   return syncStore.entries.find((e) => e.name === props.name);
+});
+
+const isToggling = computed(() => {
+  return syncEntry.value
+    ? syncStore.togglingInodes.has(syncEntry.value.inode)
+    : false;
 });
 
 const onSyncToggle = () => {
@@ -423,3 +430,24 @@ const handleTouchMove = (event: TouchEvent) => {
   }
 };
 </script>
+
+<style scoped>
+.sync-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin: 4px;
+  margin-right: 8px;
+  border: 2px solid #e0e0e0;
+  border-top-color: #40c057;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

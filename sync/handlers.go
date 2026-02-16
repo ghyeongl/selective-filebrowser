@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -340,6 +341,34 @@ func (h *Handlers) pushChildrenToQueue(parentIno uint64, parentPath string) {
 		h.daemon.Queue().PushPriority(childPath)
 		if child.Type == "dir" {
 			h.pushChildrenToQueue(child.Inode, childPath)
+		}
+	}
+}
+
+// HandleSSE handles GET /api/sync/events (Server-Sent Events stream).
+func (h *Handlers) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch := h.daemon.Events().Subscribe()
+	defer h.daemon.Events().Unsubscribe(ch)
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-ch:
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", data) //nolint:errcheck
+			flusher.Flush()
 		}
 	}
 }
