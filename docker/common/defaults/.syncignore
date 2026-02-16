@@ -1,20 +1,5 @@
-# Sync ignore patterns (name-based, filepath.Match syntax)
-# Lines starting with # are comments. Trailing / means directory-only.
-.trash
-*.sync-tmp
-.sync-tmp-*
-*.sync-conflict-*
-
-# macOS
-.DS_Store
-._*
-Icon?
-
-# Syncthing
-.stfolder
-.stignore
-.stversions
-
-# Windows
-Thumbs.db
-desktop.ini
+# Patterns listed here are excluded from sync scanning and watching.
+# One pattern per line. Trailing / matches directories only.
+# Example:
+#   *.tmp
+#   .cache/
