@@ -4,12 +4,37 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSafeTmpPath_Short(t *testing.T) {
+	result := safeTmpPath("/dir/short.txt")
+	assert.Equal(t, "/dir/short.txt.sync-tmp", result)
+}
+
+func TestSafeTmpPath_LongFilename(t *testing.T) {
+	longName := strings.Repeat("a", 250) + ".pdf"
+	dst := "/dir/" + longName
+
+	result := safeTmpPath(dst)
+
+	assert.Contains(t, filepath.Base(result), ".sync-tmp-")
+	assert.Equal(t, "/dir", filepath.Dir(result))
+	assert.LessOrEqual(t, len(filepath.Base(result)), 255)
+}
+
+func TestSafeTmpPath_Deterministic(t *testing.T) {
+	longName := strings.Repeat("x", 250) + ".pdf"
+	dst := "/dir/" + longName
+	a := safeTmpPath(dst)
+	b := safeTmpPath(dst)
+	assert.Equal(t, a, b)
+}
 
 func TestSafeCopy_Basic(t *testing.T) {
 	dir := t.TempDir()

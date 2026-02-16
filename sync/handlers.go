@@ -298,8 +298,8 @@ func (h *Handlers) pushInodesToQueue(inodes []uint64) {
 			continue
 		}
 
-		h.daemon.Queue().Push(relPath)
-		l.Debug("queued for eval", "path", relPath, "inode", ino)
+		h.daemon.Queue().PushPriority(relPath)
+		l.Debug("queued for eval (priority)", "path", relPath, "inode", ino)
 
 		if entry.Type == "dir" {
 			h.pushChildrenToQueue(ino, relPath)
@@ -337,7 +337,7 @@ func (h *Handlers) pushChildrenToQueue(parentIno uint64, parentPath string) {
 	}
 	for _, child := range children {
 		childPath := parentPath + "/" + child.Name
-		h.daemon.Queue().Push(childPath)
+		h.daemon.Queue().PushPriority(childPath)
 		if child.Type == "dir" {
 			h.pushChildrenToQueue(child.Inode, childPath)
 		}

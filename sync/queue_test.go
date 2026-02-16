@@ -117,3 +117,76 @@ func TestEvalQueue_Drain(t *testing.T) {
 	assert.Len(t, drained, 2)
 	assert.Equal(t, 0, q.Len())
 }
+
+func TestEvalQueue_PushPriority_BeforeNormal(t *testing.T) {
+	q := NewEvalQueue()
+	done := make(chan struct{})
+
+	q.Push("normal1.txt")
+	q.Push("normal2.txt")
+	q.PushPriority("urgent.txt")
+
+	// Priority should come first
+	path, ok := q.Pop(done)
+	require.True(t, ok)
+	assert.Equal(t, "urgent.txt", path)
+
+	path, ok = q.Pop(done)
+	require.True(t, ok)
+	assert.Equal(t, "normal1.txt", path)
+}
+
+func TestEvalQueue_PushPriority_PromotesFromNormal(t *testing.T) {
+	q := NewEvalQueue()
+	done := make(chan struct{})
+
+	q.Push("a.txt")
+	q.Push("b.txt")
+	q.Push("c.txt")
+
+	// Promote b.txt to priority
+	q.PushPriority("b.txt")
+
+	// b.txt should come first (from priority)
+	path, _ := q.Pop(done)
+	assert.Equal(t, "b.txt", path)
+
+	// a.txt next (normal)
+	path, _ = q.Pop(done)
+	assert.Equal(t, "a.txt", path)
+
+	// c.txt next (normal)
+	path, _ = q.Pop(done)
+	assert.Equal(t, "c.txt", path)
+
+	assert.Equal(t, 0, q.Len())
+}
+
+func TestEvalQueue_PushPriority_Dedup(t *testing.T) {
+	q := NewEvalQueue()
+
+	q.PushPriority("a.txt")
+	q.PushPriority("a.txt")
+
+	assert.Equal(t, 1, q.Len())
+}
+
+func TestEvalQueue_Push_SkipsIfInPriority(t *testing.T) {
+	q := NewEvalQueue()
+
+	q.PushPriority("a.txt")
+	q.Push("a.txt") // should be no-op
+
+	assert.Equal(t, 1, q.Len())
+}
+
+func TestEvalQueue_Has_ChecksBothQueues(t *testing.T) {
+	q := NewEvalQueue()
+
+	q.Push("normal.txt")
+	q.PushPriority("priority.txt")
+
+	assert.True(t, q.Has("normal.txt"))
+	assert.True(t, q.Has("priority.txt"))
+	assert.False(t, q.Has("missing.txt"))
+}

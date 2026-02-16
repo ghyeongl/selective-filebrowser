@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -75,7 +76,15 @@ func (d *Daemon) Run(ctx context.Context) {
 	done := ctx.Done()
 	processed := 0
 	lastLog := time.Now()
+	wasProcessing := false
 	for {
+		if d.queue.Len() > 0 {
+			wasProcessing = true
+		} else if wasProcessing {
+			l.Info("queue drained, worker idle", "totalProcessed", processed)
+			wasProcessing = false
+		}
+
 		path, ok := d.queue.Pop(done)
 		if !ok {
 			l.Info("worker stopping, context cancelled")
@@ -91,7 +100,28 @@ func (d *Daemon) Run(ctx context.Context) {
 				l.Info("worker stopping, context cancelled")
 				break
 			}
-			l.Error("pipeline failed", "path", path, "err", err)
+			l.Warn("pipeline failed, rolling back", "path", path, "err", err)
+			d.rollbackState(path)
+
+			// Retry after 5s (e.g. HDD spin-up)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+				l.Info("worker stopping, context cancelled")
+				break
+			}
+			if ctx.Err() != nil {
+				break
+			}
+
+			if err2 := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err2 != nil {
+				if ctx.Err() != nil {
+					l.Info("worker stopping, context cancelled")
+					break
+				}
+				l.Error("pipeline retry failed, rollback maintained", "path", path, "err", err2)
+				d.rollbackState(path)
+			}
 		}
 
 		processed++
@@ -104,6 +134,48 @@ func (d *Daemon) Run(ctx context.Context) {
 	watcher.Close()
 	l.Debug("watcher closed")
 	l.Info("sync daemon stopped")
+}
+
+// rollbackState aligns DB state with current disk reality after a pipeline failure.
+// Principle: disk is truth. If the pipeline couldn't change disk, adjust DB to match.
+func (d *Daemon) rollbackState(relPath string) {
+	l := sub("daemon")
+	spacesPath := filepath.Join(d.spacesRoot, relPath)
+	_, err := os.Stat(spacesPath)
+	spacesExists := err == nil
+
+	entry, sv, lookupErr := lookupDB(d.store, d.archivesRoot, relPath)
+	if lookupErr != nil || entry == nil {
+		return
+	}
+
+	// Align selected with disk reality
+	if spacesExists && !entry.Selected {
+		if err := d.store.SetSelected([]uint64{entry.Inode}, true); err != nil {
+			l.Error("rollback SetSelected failed", "path", relPath, "err", err)
+			return
+		}
+		l.Warn("rollback: selected=true (Spaces file exists)", "path", relPath)
+	} else if !spacesExists && entry.Selected {
+		if err := d.store.SetSelected([]uint64{entry.Inode}, false); err != nil {
+			l.Error("rollback SetSelected failed", "path", relPath, "err", err)
+			return
+		}
+		l.Warn("rollback: selected=false (Spaces file missing)", "path", relPath)
+	}
+
+	// Align spaces_view with disk reality
+	if spacesExists && sv == nil {
+		if spInfo, statErr := os.Stat(spacesPath); statErr == nil {
+			d.store.UpsertSpacesView(SpacesView{
+				EntryIno:    entry.Inode,
+				SyncedMtime: spInfo.ModTime().UnixNano(),
+				CheckedAt:   nowNano(),
+			})
+		}
+	} else if !spacesExists && sv != nil {
+		d.store.DeleteSpacesView(sv.EntryIno)
+	}
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.

@@ -2,4 +2,19 @@
 # Lines starting with # are comments. Trailing / means directory-only.
 .trash
 *.sync-tmp
+.sync-tmp-*
 *.sync-conflict-*
+
+# macOS
+.DS_Store
+._*
+Icon?
+
+# Syncthing
+.stfolder
+.stignore
+.stversions
+
+# Windows
+Thumbs.db
+desktop.ini

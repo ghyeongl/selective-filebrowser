@@ -65,6 +65,12 @@ func openDBAt(dbPath string) (*sql.DB, error) {
 	}
 	l.Debug("PRAGMA journal_mode=WAL")
 
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+	l.Debug("PRAGMA busy_timeout=5000")
+
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)

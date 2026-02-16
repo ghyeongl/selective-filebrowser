@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +19,18 @@ const slogDebug = slog.LevelDebug
 // ErrSourceModified is returned when SafeCopy detects that the source
 // file was modified during the copy.
 var ErrSourceModified = fmt.Errorf("source modified during copy")
+
+// safeTmpPath returns a temporary file path for SafeCopy.
+// If appending ".sync-tmp" would exceed the 255-byte filename limit (ext4),
+// a short hash-based name is used instead.
+func safeTmpPath(dst string) string {
+	base := filepath.Base(dst)
+	if len(base)+len(".sync-tmp") <= 255 {
+		return dst + ".sync-tmp"
+	}
+	h := crc32.ChecksumIEEE([]byte(base))
+	return filepath.Join(filepath.Dir(dst), fmt.Sprintf(".sync-tmp-%08x", h))
+}
 
 // SafeCopy copies src to dst atomically:
 // 1. Record src mtime
@@ -45,7 +58,7 @@ func SafeCopy(ctx context.Context, src, dst string, hasQueued func() bool) error
 		return fmt.Errorf("mkdir dst parent: %w", err)
 	}
 
-	tmpPath := dst + ".sync-tmp"
+	tmpPath := safeTmpPath(dst)
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
