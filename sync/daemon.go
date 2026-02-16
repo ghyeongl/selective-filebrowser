@@ -102,6 +102,8 @@ func (d *Daemon) Run(ctx context.Context) {
 			return d.queue.Has(path)
 		}
 
+		prevStatus := d.computeUIStatus(path)
+
 		if err := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err != nil {
 			if ctx.Err() != nil {
 				l.Info("worker stopping, context cancelled")
@@ -133,7 +135,9 @@ func (d *Daemon) Run(ctx context.Context) {
 			}
 		}
 
-		d.emitStatus(path)
+		if newStatus := d.computeUIStatus(path); newStatus != prevStatus {
+			d.emitStatus(path)
+		}
 		processed++
 		if time.Since(lastLog) >= 10*time.Minute {
 			l.Info("worker progress", "processed", processed, "remaining", d.queue.Len())
@@ -186,6 +190,17 @@ func (d *Daemon) rollbackState(relPath string) {
 	} else if !spacesExists && sv != nil {
 		d.store.DeleteSpacesView(sv.EntryIno)
 	}
+}
+
+// computeUIStatus returns the current UI status string for a path.
+func (d *Daemon) computeUIStatus(relPath string) string {
+	entry, sv, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil || entry == nil {
+		return ""
+	}
+	aMtime, _, _, _ := statFile(filepath.Join(d.archivesRoot, relPath))
+	sMtime, _, _, _ := statFile(filepath.Join(d.spacesRoot, relPath))
+	return ComputeState(entry, sv, aMtime, sMtime).UIStatus()
 }
 
 // emitStatus publishes the current status of a path to SSE clients.
