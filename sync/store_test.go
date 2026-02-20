@@ -306,8 +306,18 @@ func TestChildCounts(t *testing.T) {
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 3, ParentIno: 1, Name: "b.txt", Type: "text", Size: ptr(int64(20)), Mtime: 1000, Selected: false}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 4, ParentIno: 1, Name: "c.txt", Type: "text", Size: ptr(int64(30)), Mtime: 1000, Selected: true}))
 
-	total, sel, err := store.ChildCounts(1)
+	total, sel, stable, err := store.ChildCounts(1)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total)
 	assert.Equal(t, 2, sel)
+	// a.txt: selected=1, no spaces_view → not stable
+	// b.txt: selected=0, no spaces_view → stable (archived)
+	// c.txt: selected=1, no spaces_view → not stable
+	assert.Equal(t, 1, stable)
+
+	// Add spaces_view for a.txt → becomes stable (synced)
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 2, SyncedMtime: 1000, CheckedAt: 1000}))
+	_, _, stable, err = store.ChildCounts(1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stable) // b.txt archived + a.txt synced
 }

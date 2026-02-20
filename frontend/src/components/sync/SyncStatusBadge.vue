@@ -1,5 +1,8 @@
 <template>
-  <span v-if="status" class="sync-badge" :class="statusClass">{{
+  <span v-if="progressLabel" class="sync-badge status-syncing">{{
+    progressLabel
+  }}</span>
+  <span v-else-if="status" class="sync-badge" :class="statusClass">{{
     label
   }}</span>
 </template>
@@ -9,7 +12,21 @@ import { computed } from "vue";
 
 const props = defineProps<{
   status: string;
+  childStableCount?: number;
+  childTotalCount?: number;
 }>();
+
+const progressLabel = computed(() => {
+  if (
+    props.childTotalCount != null &&
+    props.childStableCount != null &&
+    props.childTotalCount > 0 &&
+    props.childStableCount < props.childTotalCount
+  ) {
+    return `${props.childStableCount}/${props.childTotalCount}`;
+  }
+  return null;
+});
 
 const statusClass = computed(() => `status-${props.status}`);
 

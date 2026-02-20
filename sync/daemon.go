@@ -137,6 +137,7 @@ func (d *Daemon) Run(ctx context.Context) {
 
 		if newStatus := d.computeUIStatus(path); newStatus != prevStatus {
 			d.emitStatus(path)
+			d.emitParentCounts(path)
 		}
 		processed++
 		if time.Since(lastLog) >= 10*time.Minute {
@@ -217,6 +218,33 @@ func (d *Daemon) emitStatus(relPath string) {
 		Inode:  entry.Inode,
 		Name:   entry.Name,
 		Status: state.UIStatus(),
+	})
+}
+
+// emitParentCounts publishes the parent directory's child stable/total counts
+// via SSE after a child's status changes. Only emits for the immediate parent.
+func (d *Daemon) emitParentCounts(relPath string) {
+	entry, _, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil || entry == nil || entry.ParentIno == 0 {
+		return
+	}
+
+	parent, err := d.store.GetEntry(entry.ParentIno)
+	if err != nil || parent == nil {
+		return
+	}
+
+	total, _, stable, err := d.store.ChildCounts(parent.Inode)
+	if err != nil {
+		return
+	}
+
+	d.events.Publish(SyncEvent{
+		Type:             "status",
+		Inode:            parent.Inode,
+		Name:             parent.Name,
+		ChildStableCount: &stable,
+		ChildTotalCount:  &total,
 	})
 }
 

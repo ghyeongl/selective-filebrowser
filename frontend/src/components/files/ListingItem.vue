@@ -46,7 +46,12 @@
     <div>
       <p class="name">
         {{ name }}
-        <SyncStatusBadge v-if="syncEntry" :status="syncEntry.status" />
+        <SyncStatusBadge
+          v-if="syncEntry"
+          :status="syncEntry.status"
+          :childStableCount="syncEntry.childStableCount"
+          :childTotalCount="syncEntry.childTotalCount"
+        />
         <SyncStatusBadge v-else-if="!syncStore.loading" status="no_entry" />
       </p>
 

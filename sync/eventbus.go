@@ -6,10 +6,12 @@ import (
 
 // SyncEvent is a status update event broadcast to SSE clients.
 type SyncEvent struct {
-	Type   string `json:"type"`
-	Inode  uint64 `json:"inode"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Type             string `json:"type"`
+	Inode            uint64 `json:"inode"`
+	Name             string `json:"name"`
+	Status           string `json:"status,omitempty"`
+	ChildStableCount *int   `json:"childStableCount,omitempty"`
+	ChildTotalCount  *int   `json:"childTotalCount,omitempty"`
 }
 
 // EventBus broadcasts SyncEvents to all connected SSE clients.

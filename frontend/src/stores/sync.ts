@@ -79,7 +79,15 @@ export const useSyncStore = defineStore("sync", {
     applyStatusUpdate(event: SyncEvent) {
       const entry = this.entries.find((e) => e.inode === event.inode);
       if (entry) {
-        entry.status = event.status;
+        if (event.status) {
+          entry.status = event.status;
+        }
+        if (event.childStableCount !== undefined) {
+          entry.childStableCount = event.childStableCount;
+        }
+        if (event.childTotalCount !== undefined) {
+          entry.childTotalCount = event.childTotalCount;
+        }
       }
     },
   },

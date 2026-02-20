@@ -11,6 +11,7 @@ export interface SyncEntry {
   status: string;
   childTotalCount?: number;
   childSelectedCount?: number;
+  childStableCount?: number;
 }
 
 export interface SyncListResponse {
@@ -60,6 +61,8 @@ export interface SyncEvent {
   inode: number;
   name: string;
   status: string;
+  childStableCount?: number;
+  childTotalCount?: number;
 }
 
 export function connectSSE(

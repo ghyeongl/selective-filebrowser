@@ -251,15 +251,24 @@ func (s *Store) AggregateTotalSize() (int64, error) {
 	return total.Int64, nil
 }
 
-// ChildCounts returns the total count and selected count of children
-// for the given parent inode.
-func (s *Store) ChildCounts(parentIno uint64) (total int, selectedCount int, err error) {
+// ChildCounts returns the total count, selected count, and stable count of
+// children for the given parent inode. A child is "stable" when its desired
+// state matches reality: selected with spaces_view, or unselected without.
+func (s *Store) ChildCounts(parentIno uint64) (total, selectedCount, stableCount int, err error) {
 	err = s.db.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(selected), 0)
-		FROM entries WHERE parent_ino = ?
-	`, parentIno).Scan(&total, &selectedCount)
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(e.selected), 0),
+			COUNT(CASE
+				WHEN e.selected = 1 AND sv.entry_ino IS NOT NULL THEN 1
+				WHEN e.selected = 0 AND sv.entry_ino IS NULL THEN 1
+			END)
+		FROM entries e
+		LEFT JOIN spaces_view sv ON e.inode = sv.entry_ino
+		WHERE e.parent_ino = ?
+	`, parentIno).Scan(&total, &selectedCount, &stableCount)
 	if err != nil {
-		return 0, 0, fmt.Errorf("child counts: %w", err)
+		return 0, 0, 0, fmt.Errorf("child counts: %w", err)
 	}
-	return total, selectedCount, nil
+	return total, selectedCount, stableCount, nil
 }

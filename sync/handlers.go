@@ -22,6 +22,7 @@ type SyncEntryResponse struct {
 	Status             string `json:"status"`
 	ChildTotalCount    *int   `json:"childTotalCount,omitempty"`
 	ChildSelectedCount *int   `json:"childSelectedCount,omitempty"`
+	ChildStableCount   *int   `json:"childStableCount,omitempty"`
 }
 
 // SyncStatsResponse holds aggregate sync statistics.
@@ -114,10 +115,11 @@ func (h *Handlers) HandleListEntries(w http.ResponseWriter, r *http.Request) {
 
 		// Add child counts for directories
 		if child.Type == "dir" {
-			total, sel, err := h.store.ChildCounts(child.Inode)
+			total, sel, stable, err := h.store.ChildCounts(child.Inode)
 			if err == nil {
 				item.ChildTotalCount = &total
 				item.ChildSelectedCount = &sel
+				item.ChildStableCount = &stable
 			}
 		}
 
