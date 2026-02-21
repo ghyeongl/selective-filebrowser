@@ -18,11 +18,21 @@ export interface SyncListResponse {
   items: SyncEntry[];
 }
 
+export interface SyncLogEntry {
+  time: string;
+  comp: string;
+  message: string;
+  error?: string;
+}
+
 export interface SyncStats {
   diskTotal: number;
   diskFree: number;
   archivesSize: number;
   spacesSize: number;
+  queueLen: number;
+  statusCounts: Record<string, number>;
+  recentErrors: SyncLogEntry[];
 }
 
 export async function listEntries(

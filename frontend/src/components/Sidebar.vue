@@ -104,6 +104,36 @@
         <div><i class="dot" style="background:#40c057"></i>Spaces: {{ spacesLabel }}</div>
         <div><i class="dot" style="background:#868e96"></i>Other: {{ otherLabel }}</div>
       </div>
+
+      <div class="status-panel" v-if="syncStats.statusCounts">
+        <div class="status-header">Queue: {{ syncStats.queueLen || 0 }}</div>
+        <div class="status-row">
+          <i class="dot" style="background:#868e96"></i>
+          <span>archived</span>
+          <span class="status-count">{{ formatCount(syncStats.statusCounts.archived) }}</span>
+        </div>
+        <div class="status-row">
+          <i class="dot" style="background:#2b8a3e"></i>
+          <span>synced</span>
+          <span class="status-count">{{ formatCount(syncStats.statusCounts.synced) }}</span>
+        </div>
+        <div class="status-row">
+          <i class="dot" style="background:#1864ab"></i>
+          <span>syncing</span>
+          <span class="status-count">{{ formatCount(syncStats.statusCounts.syncing) }}</span>
+        </div>
+        <div class="status-row">
+          <i class="dot" style="background:#e67700"></i>
+          <span>removing</span>
+          <span class="status-count">{{ formatCount(syncStats.statusCounts.removing) }}</span>
+        </div>
+      </div>
+
+      <div class="error-panel" v-if="syncStats.recentErrors && syncStats.recentErrors.length">
+        <div v-for="(err, i) in syncStats.recentErrors" :key="i" class="error-row">
+          {{ err.comp }}: {{ err.message }}<template v-if="err.error"> — {{ err.error }}</template>
+        </div>
+      </div>
     </div>
 
     <p class="credits">
@@ -219,17 +249,27 @@ export default {
     help() {
       this.showHover("help");
     },
+    formatCount(n) {
+      if (n == null) return "0";
+      return n.toLocaleString();
+    },
     logout: auth.logout,
   },
   watch: {
     $route: {
       handler(to) {
+        const sync = useSyncStore();
         if (to.path.includes("/files")) {
-          useSyncStore().fetchStats();
+          sync.startStatsPolling();
+        } else {
+          sync.stopStatsPolling();
         }
       },
       immediate: true,
     },
+  },
+  beforeUnmount() {
+    useSyncStore().stopStatsPolling();
   },
 };
 </script>
@@ -249,5 +289,41 @@ export default {
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+.status-panel {
+  margin-top: 8px;
+  font-size: 0.7em;
+  color: #868e96;
+  line-height: 1.6;
+}
+
+.status-header {
+  font-weight: 600;
+  color: #495057;
+  margin-bottom: 2px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.error-panel {
+  margin-top: 8px;
+  font-size: 0.65em;
+  color: #c92a2a;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.error-row {
+  padding: 2px 0;
 }
 </style>

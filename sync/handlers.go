@@ -27,10 +27,13 @@ type SyncEntryResponse struct {
 
 // SyncStatsResponse holds aggregate sync statistics.
 type SyncStatsResponse struct {
-	DiskTotal    int64 `json:"diskTotal"`
-	DiskFree     int64 `json:"diskFree"`
-	ArchivesSize int64 `json:"archivesSize"`
-	SpacesSize   int64 `json:"spacesSize"`
+	DiskTotal    int64          `json:"diskTotal"`
+	DiskFree     int64          `json:"diskFree"`
+	ArchivesSize int64          `json:"archivesSize"`
+	SpacesSize   int64          `json:"spacesSize"`
+	QueueLen     int            `json:"queueLen"`
+	StatusCounts map[string]int `json:"statusCounts"`
+	RecentErrors []LogEntry     `json:"recentErrors"`
 }
 
 // Handlers holds the HTTP handlers for the sync API.
@@ -279,12 +282,23 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 		diskFree = int64(stat.Bavail) * int64(stat.Bsize)
 	}
 
+	archived, synced, syncing, removing, _ := h.store.StatusCounts()
+	queueLen := h.daemon.Queue().Len()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(SyncStatsResponse{ //nolint:errcheck
 		DiskTotal:    diskTotal,
 		DiskFree:     diskFree,
 		ArchivesSize: archivesSize,
 		SpacesSize:   spacesSize,
+		QueueLen:     queueLen,
+		StatusCounts: map[string]int{
+			"archived": archived,
+			"synced":   synced,
+			"syncing":  syncing,
+			"removing": removing,
+		},
+		RecentErrors: RecentErrors(),
 	})
 }
 

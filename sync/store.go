@@ -272,3 +272,22 @@ func (s *Store) ChildCounts(parentIno uint64) (total, selectedCount, stableCount
 	}
 	return total, selectedCount, stableCount, nil
 }
+
+// StatusCounts returns aggregate file counts by DB-derived status.
+// Directories are excluded. Status is approximated from selected flag + spaces_view presence.
+func (s *Store) StatusCounts() (archived, synced, syncing, removing int, err error) {
+	err = s.db.QueryRow(`
+		SELECT
+			COUNT(CASE WHEN e.selected = 0 AND sv.entry_ino IS NULL THEN 1 END),
+			COUNT(CASE WHEN e.selected = 1 AND sv.entry_ino IS NOT NULL THEN 1 END),
+			COUNT(CASE WHEN e.selected = 1 AND sv.entry_ino IS NULL THEN 1 END),
+			COUNT(CASE WHEN e.selected = 0 AND sv.entry_ino IS NOT NULL THEN 1 END)
+		FROM entries e
+		LEFT JOIN spaces_view sv ON e.inode = sv.entry_ino
+		WHERE e.type != 'dir'
+	`).Scan(&archived, &synced, &syncing, &removing)
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("status counts: %w", err)
+	}
+	return archived, synced, syncing, removing, nil
+}

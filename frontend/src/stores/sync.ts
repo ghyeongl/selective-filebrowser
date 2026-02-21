@@ -17,6 +17,7 @@ interface SyncState {
   loading: boolean;
   eventSource: EventSource | null;
   togglingInodes: Set<number>;
+  statsTimer: ReturnType<typeof setInterval> | null;
 }
 
 export const useSyncStore = defineStore("sync", {
@@ -27,6 +28,7 @@ export const useSyncStore = defineStore("sync", {
     loading: false,
     eventSource: null,
     togglingInodes: new Set<number>(),
+    statsTimer: null,
   }),
   actions: {
     async fetchEntries(path?: string) {
@@ -49,6 +51,17 @@ export const useSyncStore = defineStore("sync", {
     },
     async fetchStats() {
       this.stats = await getStats();
+    },
+    startStatsPolling() {
+      this.stopStatsPolling();
+      this.fetchStats();
+      this.statsTimer = setInterval(() => this.fetchStats(), 10_000);
+    },
+    stopStatsPolling() {
+      if (this.statsTimer) {
+        clearInterval(this.statsTimer);
+        this.statsTimer = null;
+      }
     },
     async toggleEntry(entry: SyncEntry) {
       this.togglingInodes.add(entry.inode);
