@@ -23,6 +23,8 @@ type SyncEntryResponse struct {
 	ChildTotalCount    *int   `json:"childTotalCount,omitempty"`
 	ChildSelectedCount *int   `json:"childSelectedCount,omitempty"`
 	ChildStableCount   *int   `json:"childStableCount,omitempty"`
+	DirTotalSize       *int64 `json:"dirTotalSize,omitempty"`
+	DirSelectedSize    *int64 `json:"dirSelectedSize,omitempty"`
 }
 
 // SyncStatsResponse holds aggregate sync statistics.
@@ -359,6 +361,68 @@ func (h *Handlers) pushChildrenToQueue(parentIno uint64, parentPath string) {
 		if child.Type == "dir" {
 			h.pushChildrenToQueue(child.Inode, childPath)
 		}
+	}
+}
+
+// HandleDirSize handles GET /api/sync/dirsize?inodes=123,456,789
+// Returns an SSE stream with dir size results, one per inode.
+// Cancellable via client disconnect (context cancellation).
+func (h *Handlers) HandleDirSize(w http.ResponseWriter, r *http.Request) {
+	l := sub("handlers")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	inodesParam := r.URL.Query().Get("inodes")
+	if inodesParam == "" {
+		http.Error(w, "missing inodes parameter", http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.Split(inodesParam, ",")
+	inodes := make([]uint64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		ino, err := strconv.ParseUint(p, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid inode: "+p, http.StatusBadRequest)
+			return
+		}
+		inodes = append(inodes, ino)
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ctx := r.Context()
+	for _, ino := range inodes {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		totalSize, selectedSize, err := h.store.DirSize(ino)
+		if err != nil {
+			l.Warn("dirsize query failed", "inode", ino, "err", err)
+			continue
+		}
+
+		event := struct {
+			Inode           uint64 `json:"inode"`
+			DirTotalSize    int64  `json:"dirTotalSize"`
+			DirSelectedSize int64  `json:"dirSelectedSize"`
+		}{ino, totalSize, selectedSize}
+
+		data, _ := json.Marshal(event)
+		fmt.Fprintf(w, "data: %s\n\n", data) //nolint:errcheck
+		flusher.Flush()
 	}
 }
 

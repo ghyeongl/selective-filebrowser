@@ -96,6 +96,23 @@ func (s *Store) DeleteEntry(inode uint64) error {
 	return nil
 }
 
+// DeleteEntryRecursive removes an entry and all its descendants.
+// spaces_view rows are cleaned up automatically via ON DELETE CASCADE.
+func (s *Store) DeleteEntryRecursive(inode uint64) error {
+	_, err := s.db.Exec(`
+		WITH RECURSIVE subtree(ino) AS (
+			SELECT ?
+			UNION ALL
+			SELECT e.inode FROM entries e JOIN subtree s ON e.parent_ino = s.ino
+		)
+		DELETE FROM entries WHERE inode IN (SELECT ino FROM subtree)
+	`, inode)
+	if err != nil {
+		return fmt.Errorf("delete entry recursive: %w", err)
+	}
+	return nil
+}
+
 // ListChildren returns all direct children of the given parent inode.
 // Use parentIno=0 for root-level entries.
 func (s *Store) ListChildren(parentIno uint64) ([]Entry, error) {
@@ -249,6 +266,28 @@ func (s *Store) AggregateTotalSize() (int64, error) {
 		return 0, nil
 	}
 	return total.Int64, nil
+}
+
+// DirSize returns the total and selected recursive file sizes for a directory.
+// Both values exclude directories themselves.
+func (s *Store) DirSize(inode uint64) (totalSize, selectedSize int64, err error) {
+	err = s.db.QueryRow(`
+		WITH RECURSIVE subtree(ino) AS (
+			SELECT ?
+			UNION ALL
+			SELECT e.inode FROM entries e JOIN subtree s ON e.parent_ino = s.ino
+		)
+		SELECT
+			COALESCE(SUM(e.size), 0),
+			COALESCE(SUM(CASE WHEN e.selected = 1 THEN e.size ELSE 0 END), 0)
+		FROM entries e
+		WHERE e.inode IN (SELECT ino FROM subtree)
+		  AND e.type != 'dir'
+	`, inode).Scan(&totalSize, &selectedSize)
+	if err != nil {
+		return 0, 0, fmt.Errorf("dir size: %w", err)
+	}
+	return totalSize, selectedSize, nil
 }
 
 // ChildCounts returns the total count, selected count, and stable count of

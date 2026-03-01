@@ -12,6 +12,8 @@ type SyncEvent struct {
 	Status           string `json:"status,omitempty"`
 	ChildStableCount *int   `json:"childStableCount,omitempty"`
 	ChildTotalCount  *int   `json:"childTotalCount,omitempty"`
+	DirTotalSize     *int64 `json:"dirTotalSize,omitempty"`
+	DirSelectedSize  *int64 `json:"dirSelectedSize,omitempty"`
 }
 
 // EventBus broadcasts SyncEvents to all connected SSE clients.

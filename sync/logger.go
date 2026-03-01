@@ -5,8 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	gosync "sync"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // logger is the package-level structured logger for all sync operations.
@@ -15,21 +18,52 @@ var logger *slog.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // InitLogger configures the sync package logger.
 // Always enables console output: INFO→stdout, WARN/ERROR→stderr.
-// If debugWriter is non-nil, also writes DEBUG+ level logs to it.
-func InitLogger(debugWriter io.Writer) {
+// If logDir is non-empty, also writes to level-split log files:
+//   - sync_warn.log  — WARN + ERROR (no practical size limit)
+//   - sync_info.log  — INFO only (1MB, 1 backup)
+//   - sync_debug.log — DEBUG only (1MB, 1 backup)
+func InitLogger(logDir string) {
 	console := &consoleHandler{
 		stdout: slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		stderr: slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}),
 	}
 	errCapture := &errorCaptureHandler{}
 
-	if debugWriter == nil {
-		logger = slog.New(&multiHandler{handlers: []slog.Handler{console, errCapture}})
-		return
+	handlers := []slog.Handler{console, errCapture}
+
+	if logDir != "" {
+		os.MkdirAll(logDir, 0750) //nolint:errcheck
+
+		warnFile := slog.NewTextHandler(&lumberjack.Logger{
+			Filename:   filepath.Join(logDir, "sync_warn.log"),
+			MaxSize:    1000,
+			MaxBackups: 3,
+		}, &slog.HandlerOptions{Level: slog.LevelWarn})
+
+		infoFile := &levelRangeHandler{
+			min: slog.LevelInfo,
+			max: slog.LevelInfo,
+			inner: slog.NewTextHandler(&lumberjack.Logger{
+				Filename:   filepath.Join(logDir, "sync_info.log"),
+				MaxSize:    1,
+				MaxBackups: 1,
+			}, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		}
+
+		debugFile := &levelRangeHandler{
+			min: slog.LevelDebug,
+			max: slog.LevelDebug,
+			inner: slog.NewTextHandler(&lumberjack.Logger{
+				Filename:   filepath.Join(logDir, "sync_debug.log"),
+				MaxSize:    1,
+				MaxBackups: 1,
+			}, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		}
+
+		handlers = append(handlers, warnFile, infoFile, debugFile)
 	}
 
-	file := slog.NewTextHandler(debugWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
-	logger = slog.New(&multiHandler{handlers: []slog.Handler{console, file, errCapture}})
+	logger = slog.New(&multiHandler{handlers: handlers})
 }
 
 // sub returns a child logger tagged with the given component name.
@@ -136,6 +170,29 @@ func (h *errorCaptureHandler) Handle(_ context.Context, r slog.Record) error {
 
 func (h *errorCaptureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *errorCaptureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// --- levelRangeHandler: passes only a specific level range ---
+
+type levelRangeHandler struct {
+	min, max slog.Level
+	inner    slog.Handler
+}
+
+func (h *levelRangeHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.min && level <= h.max
+}
+
+func (h *levelRangeHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *levelRangeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &levelRangeHandler{min: h.min, max: h.max, inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h *levelRangeHandler) WithGroup(name string) slog.Handler {
+	return &levelRangeHandler{min: h.min, max: h.max, inner: h.inner.WithGroup(name)}
+}
 
 // --- multiHandler: fans out to multiple handlers ---
 

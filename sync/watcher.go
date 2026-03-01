@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -89,9 +90,11 @@ func (w *Watcher) Start(ctx context.Context) error {
 			// Reset debounce timer
 			timer.Reset(debounceInterval)
 
-			// If a new directory was created, add it to watch
+			// If a new directory was created, watch it and all subdirectories
 			if event.Has(fsnotify.Create) {
-				_ = w.watcher.Add(event.Name)
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					_ = w.addRecursive(event.Name)
+				}
 			}
 
 		case err, ok := <-w.watcher.Errors:

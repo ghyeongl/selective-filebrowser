@@ -185,17 +185,21 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 
 	// S_disk=0, A_disk=0 → both gone
 	if entry != nil {
-		// Clean up DB records
-		if sv != nil {
-			if err := store.DeleteSpacesView(sv.EntryIno); err != nil {
-				return fmt.Errorf("delete spaces_view: %w", err)
+		if entry.Type == "dir" {
+			l.Debug("deleting lost dir subtree", "path", relPath, "inode", entry.Inode)
+			if err := store.DeleteEntryRecursive(entry.Inode); err != nil {
+				return fmt.Errorf("delete entry recursive: %w", err)
 			}
-			l.Debug("deleting lost entry and spaces_view", "path", relPath, "inode", entry.Inode)
 		} else {
+			if sv != nil {
+				if err := store.DeleteSpacesView(sv.EntryIno); err != nil {
+					return fmt.Errorf("delete spaces_view: %w", err)
+				}
+			}
 			l.Debug("deleting lost entry", "path", relPath, "inode", entry.Inode)
-		}
-		if err := store.DeleteEntry(entry.Inode); err != nil {
-			return fmt.Errorf("delete entry: %w", err)
+			if err := store.DeleteEntry(entry.Inode); err != nil {
+				return fmt.Errorf("delete entry: %w", err)
+			}
 		}
 	} else {
 		l.Debug("no-op: no DB records", "path", relPath)

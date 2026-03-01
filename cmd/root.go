@@ -257,21 +257,12 @@ user created with the credentials from options "username" and "password".`,
 					if syncLogPath == "true" {
 						syncLogPath = "log/sync.log"
 					}
-					os.MkdirAll(filepath.Dir(syncLogPath), 0750)
-					if f, err := os.OpenFile(syncLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640); err == nil {
-						f.Close()
-					}
-					ssync.InitLogger(&lumberjack.Logger{
-						Filename:   syncLogPath,
-						MaxSize:    100,
-						MaxAge:     14,
-						MaxBackups: 10,
-					})
+					ssync.InitLogger(filepath.Dir(syncLogPath))
 				} else {
-					ssync.InitLogger(nil)
+					ssync.InitLogger("")
 				}
 			} else {
-				ssync.InitLogger(nil)
+				ssync.InitLogger("")
 			}
 
 			fbDBPath, _ := filepath.Abs(v.GetString("database"))

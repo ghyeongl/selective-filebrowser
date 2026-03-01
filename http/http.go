@@ -95,6 +95,7 @@ func NewHandler(
 		syncAPI.HandleFunc("/select", syncHandlers.HandleSelect).Methods("POST")
 		syncAPI.HandleFunc("/deselect", syncHandlers.HandleDeselect).Methods("POST")
 		syncAPI.HandleFunc("/stats", syncHandlers.HandleStats).Methods("GET")
+		syncAPI.HandleFunc("/dirsize", syncHandlers.HandleDirSize).Methods("GET")
 		syncAPI.HandleFunc("/events", syncHandlers.HandleSSE).Methods("GET")
 	}
 
