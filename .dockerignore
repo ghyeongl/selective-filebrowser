@@ -2,7 +2,6 @@
 dist
 .idea
 frontend/node_modules
-frontend/dist
 filebrowser.db
 sync.db
 sync.db-shm
