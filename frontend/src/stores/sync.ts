@@ -5,6 +5,7 @@ import {
   deselectEntries,
   getStats,
   connectSSE,
+  fetchDirSizes,
   type SyncEntry,
   type SyncStats,
   type SyncEvent,
@@ -18,6 +19,8 @@ interface SyncState {
   eventSource: EventSource | null;
   togglingInodes: Set<number>;
   statsTimer: ReturnType<typeof setInterval> | null;
+  dirSizeSource: EventSource | null;
+  dirSizeDebounce: ReturnType<typeof setTimeout> | null;
 }
 
 export const useSyncStore = defineStore("sync", {
@@ -29,6 +32,8 @@ export const useSyncStore = defineStore("sync", {
     eventSource: null,
     togglingInodes: new Set<number>(),
     statsTimer: null,
+    dirSizeSource: null,
+    dirSizeDebounce: null,
   }),
   actions: {
     async fetchEntries(path?: string) {
@@ -37,6 +42,7 @@ export const useSyncStore = defineStore("sync", {
         const resp = await listEntries(path);
         this.entries = resp.items;
         this.currentPath = path ?? null;
+        this.loadDirSizes();
       } finally {
         this.loading = false;
       }
@@ -75,6 +81,36 @@ export const useSyncStore = defineStore("sync", {
         this.togglingInodes.delete(entry.inode);
       }
     },
+    loadDirSizes() {
+      if (this.dirSizeSource) {
+        this.dirSizeSource.close();
+        this.dirSizeSource = null;
+      }
+      const dirInodes = this.entries
+        .filter((e) => e.type === "dir")
+        .map((e) => e.inode);
+      if (dirInodes.length === 0) return;
+
+      let received = 0;
+      this.dirSizeSource = fetchDirSizes(dirInodes, (event) => {
+        const entry = this.entries.find((e) => e.inode === event.inode);
+        if (entry) {
+          entry.dirTotalSize = event.dirTotalSize;
+          entry.dirSyncedSize = event.dirSyncedSize;
+        }
+        if (++received >= dirInodes.length) {
+          this.dirSizeSource?.close();
+          this.dirSizeSource = null;
+        }
+      });
+    },
+    debouncedLoadDirSizes() {
+      if (this.dirSizeDebounce) clearTimeout(this.dirSizeDebounce);
+      this.dirSizeDebounce = setTimeout(() => {
+        this.dirSizeDebounce = null;
+        this.loadDirSizes();
+      }, 500);
+    },
     connectEvents() {
       if (this.eventSource) return;
       this.eventSource = connectSSE((event: SyncEvent) => {
@@ -88,6 +124,14 @@ export const useSyncStore = defineStore("sync", {
         this.eventSource.close();
         this.eventSource = null;
       }
+      if (this.dirSizeSource) {
+        this.dirSizeSource.close();
+        this.dirSizeSource = null;
+      }
+      if (this.dirSizeDebounce) {
+        clearTimeout(this.dirSizeDebounce);
+        this.dirSizeDebounce = null;
+      }
     },
     applyStatusUpdate(event: SyncEvent) {
       const entry = this.entries.find((e) => e.inode === event.inode);
@@ -100,6 +144,9 @@ export const useSyncStore = defineStore("sync", {
         }
         if (event.childTotalCount !== undefined) {
           entry.childTotalCount = event.childTotalCount;
+        }
+        if (entry.type === "dir") {
+          this.debouncedLoadDirSizes();
         }
       }
     },

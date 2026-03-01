@@ -17,8 +17,26 @@ func NewStore(db *sql.DB) *Store {
 
 // UpsertEntry inserts or updates an entry keyed by path (parent_ino + name).
 // Handles rm+touch: same path, new inode → ON CONFLICT updates inode.
+// Also handles inode reuse/move: if the same inode exists at a different path,
+// the stale entry (and its subtree if directory) is removed first.
 func (s *Store) UpsertEntry(e Entry) error {
+	// Remove stale entry if this inode exists at a different path.
+	// Recursive CTE handles directories: deletes the stale dir and all descendants.
+	// spaces_view rows are cleaned up via ON DELETE CASCADE.
 	_, err := s.db.Exec(`
+		WITH RECURSIVE subtree(ino) AS (
+			SELECT inode FROM entries
+			WHERE inode = ? AND NOT (parent_ino = ? AND name = ?)
+			UNION ALL
+			SELECT e.inode FROM entries e JOIN subtree s ON e.parent_ino = s.ino
+		)
+		DELETE FROM entries WHERE inode IN (SELECT ino FROM subtree)
+	`, e.Inode, e.ParentIno, e.Name)
+	if err != nil {
+		return fmt.Errorf("cleanup stale inode: %w", err)
+	}
+
+	_, err = s.db.Exec(`
 		INSERT INTO entries (inode, parent_ino, name, type, size, mtime, selected)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(parent_ino, name) DO UPDATE SET
@@ -268,9 +286,10 @@ func (s *Store) AggregateTotalSize() (int64, error) {
 	return total.Int64, nil
 }
 
-// DirSize returns the total and selected recursive file sizes for a directory.
+// DirSize returns the total and synced recursive file sizes for a directory.
+// syncedSize is based on spaces_view presence (files actually on Spaces disk).
 // Both values exclude directories themselves.
-func (s *Store) DirSize(inode uint64) (totalSize, selectedSize int64, err error) {
+func (s *Store) DirSize(inode uint64) (totalSize, syncedSize int64, err error) {
 	err = s.db.QueryRow(`
 		WITH RECURSIVE subtree(ino) AS (
 			SELECT ?
@@ -279,15 +298,16 @@ func (s *Store) DirSize(inode uint64) (totalSize, selectedSize int64, err error)
 		)
 		SELECT
 			COALESCE(SUM(e.size), 0),
-			COALESCE(SUM(CASE WHEN e.selected = 1 THEN e.size ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN sv.entry_ino IS NOT NULL THEN e.size ELSE 0 END), 0)
 		FROM entries e
+		LEFT JOIN spaces_view sv ON e.inode = sv.entry_ino
 		WHERE e.inode IN (SELECT ino FROM subtree)
 		  AND e.type != 'dir'
-	`, inode).Scan(&totalSize, &selectedSize)
+	`, inode).Scan(&totalSize, &syncedSize)
 	if err != nil {
 		return 0, 0, fmt.Errorf("dir size: %w", err)
 	}
-	return totalSize, selectedSize, nil
+	return totalSize, syncedSize, nil
 }
 
 // ChildCounts returns the total count, selected count, and stable count of

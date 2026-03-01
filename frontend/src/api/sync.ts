@@ -12,6 +12,8 @@ export interface SyncEntry {
   childTotalCount?: number;
   childSelectedCount?: number;
   childStableCount?: number;
+  dirTotalSize?: number;
+  dirSyncedSize?: number;
 }
 
 export interface SyncListResponse {
@@ -85,5 +87,22 @@ export function connectSSE(
     onEvent(event);
   };
 
+  return es;
+}
+
+export interface DirSizeEvent {
+  inode: number;
+  dirTotalSize: number;
+  dirSyncedSize: number;
+}
+
+export function fetchDirSizes(
+  inodes: number[],
+  onResult: (event: DirSizeEvent) => void
+): EventSource {
+  const es = new EventSource(
+    `${baseURL}/api/sync/dirsize?inodes=${inodes.join(",")}`
+  );
+  es.onmessage = (e) => onResult(JSON.parse(e.data));
   return es;
 }

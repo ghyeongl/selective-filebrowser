@@ -55,7 +55,9 @@
         <SyncStatusBadge v-else-if="!syncStore.loading" status="no_entry" />
       </p>
 
-      <p v-if="isDir" class="size" data-order="-1">&mdash;</p>
+      <p v-if="isDir" class="size" :data-order="dirSizeOrder">
+        {{ dirSizeDisplay }}
+      </p>
       <p v-else class="size" :data-order="humanSize()">{{ humanSize() }}</p>
 
       <p class="modified">
@@ -164,6 +166,18 @@ const isThumbsEnabled = computed(() => {
 const humanSize = () => {
   return props.type == "invalid_link" ? "invalid link" : filesize(props.size);
 };
+
+const dirSizeDisplay = computed(() => {
+  if (!syncEntry.value || syncEntry.value.dirTotalSize == null) return "\u2014";
+  const total = filesize(syncEntry.value.dirTotalSize);
+  const synced = syncEntry.value.dirSyncedSize;
+  if (synced != null && synced !== syncEntry.value.dirTotalSize) {
+    return `${filesize(synced)} / ${total}`;
+  }
+  return total;
+});
+
+const dirSizeOrder = computed(() => syncEntry.value?.dirTotalSize ?? -1);
 
 const humanTime = () => {
   if (!props.readOnly && authStore.user?.dateFormat) {

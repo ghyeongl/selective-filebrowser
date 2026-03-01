@@ -24,7 +24,7 @@ type SyncEntryResponse struct {
 	ChildSelectedCount *int   `json:"childSelectedCount,omitempty"`
 	ChildStableCount   *int   `json:"childStableCount,omitempty"`
 	DirTotalSize       *int64 `json:"dirTotalSize,omitempty"`
-	DirSelectedSize    *int64 `json:"dirSelectedSize,omitempty"`
+	DirSyncedSize      *int64 `json:"dirSyncedSize,omitempty"`
 }
 
 // SyncStatsResponse holds aggregate sync statistics.
@@ -408,17 +408,17 @@ func (h *Handlers) HandleDirSize(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 
-		totalSize, selectedSize, err := h.store.DirSize(ino)
+		totalSize, syncedSize, err := h.store.DirSize(ino)
 		if err != nil {
 			l.Warn("dirsize query failed", "inode", ino, "err", err)
 			continue
 		}
 
 		event := struct {
-			Inode           uint64 `json:"inode"`
-			DirTotalSize    int64  `json:"dirTotalSize"`
-			DirSelectedSize int64  `json:"dirSelectedSize"`
-		}{ino, totalSize, selectedSize}
+			Inode         uint64 `json:"inode"`
+			DirTotalSize  int64  `json:"dirTotalSize"`
+			DirSyncedSize int64  `json:"dirSyncedSize"`
+		}{ino, totalSize, syncedSize}
 
 		data, _ := json.Marshal(event)
 		fmt.Fprintf(w, "data: %s\n\n", data) //nolint:errcheck
