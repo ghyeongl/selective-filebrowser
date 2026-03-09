@@ -368,17 +368,21 @@ func TestE2E_Scenario21_Repairing_Sel_Clean(t *testing.T) {
 	entries, _ := env.store.ListChildren(0)
 	ino := entries[0].Inode
 
-	// Remove Spaces file (S_disk=0, S_db=1, sel=1)
+	// Remove Spaces file (S_disk=0, S_db=1, sel=1) — external deletion
 	os.Remove(filepath.Join(env.spacesRoot, "rp21.txt"))
 	env.run(t, "rp21.txt")
 
-	// P3 should re-copy A→S since selected
-	got, err := os.ReadFile(filepath.Join(env.spacesRoot, "rp21.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("data"), got, "#21: Spaces should be restored")
+	// P3 should deselect (external deletion), not re-copy
+	_, err := os.Stat(filepath.Join(env.spacesRoot, "rp21.txt"))
+	assert.True(t, os.IsNotExist(err), "#21: Spaces file should remain deleted")
 
+	e, _ := env.store.GetEntry(ino)
+	require.NotNil(t, e)
+	assert.False(t, e.Selected, "#21: should be deselected after external delete")
+
+	// P4 cleans up spaces_view
 	sv, _ := env.store.GetSpacesView(ino)
-	assert.NotNil(t, sv, "#21: spaces_view should exist")
+	assert.Nil(t, sv, "#21: spaces_view should be cleaned up")
 }
 
 func TestE2E_Scenario22_Repairing_Sel_ADirty(t *testing.T) {
@@ -389,20 +393,19 @@ func TestE2E_Scenario22_Repairing_Sel_ADirty(t *testing.T) {
 	entries, _ := env.store.ListChildren(0)
 	ino := entries[0].Inode
 
-	// Modify Archives + remove Spaces
+	// Modify Archives + remove Spaces (external deletion with ADirty)
 	time.Sleep(10 * time.Millisecond)
 	env.writeArchive(t, "rp22.txt", []byte("v2"))
 	os.Remove(filepath.Join(env.spacesRoot, "rp22.txt"))
 	env.run(t, "rp22.txt")
 
-	// Should sync latest Archives to Spaces
-	got, err := os.ReadFile(filepath.Join(env.spacesRoot, "rp22.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("v2"), got, "#22: Spaces should get v2")
+	// P2 resolves ADirty, then P3 deselects (external deletion)
+	_, err := os.Stat(filepath.Join(env.spacesRoot, "rp22.txt"))
+	assert.True(t, os.IsNotExist(err), "#22: Spaces file should remain deleted")
 
 	e, _ := env.store.GetEntry(ino)
 	require.NotNil(t, e)
-	assert.True(t, e.Selected)
+	assert.False(t, e.Selected, "#22: should be deselected after external delete")
 }
 
 // ============================================================
@@ -492,20 +495,23 @@ func TestE2E_Scenario24_Repairing_SDisk_NoSDb_NoSel_ADirty(t *testing.T) {
 
 func TestE2E_Scenario25_Repairing_SDisk_NoSDb_Sel(t *testing.T) {
 	env := setupPipelineEnv(t)
-	env.writeArchive(t, "rp25.txt", []byte("data"))
+	env.writeArchive(t, "rp25.txt", []byte("archive-v1"))
 	env.run(t, "rp25.txt")
 	entries, _ := env.store.ListChildren(0)
 	ino := entries[0].Inode
 	require.NoError(t, env.store.SetSelected([]uint64{ino}, true))
 
-	// Add Spaces file (S_disk=1 but S_db=0, sel=1)
-	env.writeSpaces(t, "rp25.txt", []byte("data"))
+	// Spaces file is newer (S_disk=1 but S_db=0, sel=1)
+	time.Sleep(10 * time.Millisecond)
+	env.writeSpaces(t, "rp25.txt", []byte("spaces-newer"))
 	env.run(t, "rp25.txt")
 
-	// P4 should create spaces_view
+	// Spaces is newer → S→A copy
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "rp25.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "spaces-newer", string(got), "#25: archives should have spaces content")
 	sv, _ := env.store.GetSpacesView(ino)
 	assert.NotNil(t, sv, "#25: spaces_view should be created")
-	assert.True(t, env.fileExists(filepath.Join(env.spacesRoot, "rp25.txt")))
 }
 
 func TestE2E_Scenario26_Repairing_SDisk_NoSDb_Sel_ADirty(t *testing.T) {
@@ -516,13 +522,16 @@ func TestE2E_Scenario26_Repairing_SDisk_NoSDb_Sel_ADirty(t *testing.T) {
 	ino := entries[0].Inode
 	require.NoError(t, env.store.SetSelected([]uint64{ino}, true))
 
-	// Add Spaces, modify Archives
+	// Spaces file added, then Archives modified (A is newer)
 	env.writeSpaces(t, "rp26.txt", []byte("v1"))
 	time.Sleep(10 * time.Millisecond)
-	env.writeArchive(t, "rp26.txt", []byte("v2 modified"))
+	env.writeArchive(t, "rp26.txt", []byte("v2-archive-newer"))
 	env.run(t, "rp26.txt")
 
-	// P4 should create spaces_view
+	// Archives is newer → A→S copy
+	got, err := os.ReadFile(filepath.Join(env.spacesRoot, "rp26.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v2-archive-newer", string(got), "#26: spaces should have archives content")
 	sv, _ := env.store.GetSpacesView(ino)
 	assert.NotNil(t, sv, "#26: spaces_view should be created")
 }

@@ -86,9 +86,9 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 		}
 	}
 
-	// P2: Change sync (A_dirty, S_dirty, or external Spaces introduction)
-	// S_db=0 + S_disk=1 + selected=0 → S_disk is authority, accept reality
-	if state.ADirty || state.SDirty || (state.SDisk && !state.SDb && entry != nil && !entry.Selected) {
+	// P2: Change sync (A_dirty, S_dirty, or external/untracked Spaces introduction)
+	// S_db=0 + S_disk=1 → no baseline, needs reconciliation
+	if state.ADirty || state.SDirty || (state.SDisk && !state.SDb && entry != nil) {
 		l.Debug("P2 enter: change sync", "path", relPath, "A_dirty", state.ADirty, "S_dirty", state.SDirty)
 		if err := p2(ctx, store, entry, sv, relPath, archivePath, spacesPath, archivesRoot, state, hasQueued); err != nil {
 			return fmt.Errorf("P2: %w", err)
@@ -163,6 +163,17 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 			}
 			l.Debug("mkdir recovery done", "path", relPath)
 		} else {
+			// SDb=0: no sync record → verify identity via mtime
+			if entry != nil && sv == nil {
+				spMtime := srcInfo.ModTime().UnixNano()
+				if spMtime != entry.Mtime {
+					l.Warn("P0 recovery: Spaces file mtime mismatch (possible external origin)",
+						"path", relPath,
+						"entryMtime", entry.Mtime,
+						"spacesMtime", spMtime,
+					)
+				}
+			}
 			if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
 				return err
 			}
@@ -250,13 +261,20 @@ func p1(store *Store, relPath, archivesRoot string, inode *uint64, isDir *bool, 
 func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath, archivePath, spacesPath, archivesRoot string, state State, hasQueued func() bool) error {
 	l := sub("P2")
 
-	// External Spaces introduction: S_db=0 + S_disk=1 + selected=0
-	// S_db=0 means S_disk is authority → accept reality, set selected=1
-	if state.SDisk && !state.SDb && entry != nil && !entry.Selected {
-		if state.ADirty {
-			return p2ExternalConflict(ctx, store, entry, relPath, archivePath, spacesPath, archivesRoot, hasQueued)
+	// No baseline (S_db=0 + S_disk=1): reconcile before P4 creates spaces_view
+	if state.SDisk && !state.SDb && entry != nil {
+		if !entry.Selected {
+			// sel=0: external Spaces introduction → accept or conflict
+			if state.ADirty {
+				return p2ExternalConflict(ctx, store, entry, relPath, archivePath, spacesPath, archivesRoot, hasQueued)
+			}
+			return p2ExternalAccept(ctx, store, entry, relPath, archivePath, spacesPath, hasQueued)
 		}
-		return p2ExternalAccept(ctx, store, entry, relPath, archivePath, spacesPath, hasQueued)
+		// sel=1: managed file, no baseline → mtime-based reconciliation
+		if entry.Type != "dir" {
+			return p2Reconcile(ctx, store, entry, relPath, archivePath, spacesPath, state, hasQueued)
+		}
+		return nil // directories: no content to reconcile, P4 creates baseline
 	}
 
 	if state.ADirty && state.SDirty {
@@ -371,6 +389,59 @@ func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 	return updateEntryFromDisk(store, entry, archivePath, sv, spacesPath)
 }
 
+// p2Reconcile handles scenarios #25/#26: SDb=0, SDisk=1, Sel=1.
+// No baseline exists — compare disk mtimes to determine copy direction.
+func p2Reconcile(ctx context.Context, store *Store, entry *Entry, relPath, archivePath, spacesPath string, state State, hasQueued func() bool) error {
+	l := sub("P2")
+
+	aInfo, err := os.Stat(archivePath)
+	if err != nil {
+		return fmt.Errorf("stat archive: %w", err)
+	}
+	sInfo, err := os.Stat(spacesPath)
+	if err != nil {
+		return fmt.Errorf("stat spaces: %w", err)
+	}
+
+	// ADirty → update entry mtime first
+	if state.ADirty {
+		if err := store.UpdateEntryMtime(entry.Inode, aInfo.ModTime().UnixNano(), ptrInt64(aInfo.Size())); err != nil {
+			return fmt.Errorf("update entry mtime: %w", err)
+		}
+		entry.Mtime = aInfo.ModTime().UnixNano()
+		entry.Size = ptrInt64(aInfo.Size())
+	}
+
+	aMtime := aInfo.ModTime()
+	sMtime := sInfo.ModTime()
+
+	if aMtime.Equal(sMtime) {
+		l.Debug("mtime match, reconciliation skipped", "path", relPath)
+		return nil // P4 creates baseline
+	}
+
+	if aMtime.After(sMtime) {
+		// Archives is newer → A→S
+		l.Debug("archives newer, copying A→S", "path", relPath,
+			"A_mtime", aMtime.UnixNano(), "S_mtime", sMtime.UnixNano())
+		return SafeCopy(ctx, archivePath, spacesPath, hasQueued)
+		// P4 creates spaces_view baseline
+	}
+
+	// Spaces is newer → S→A
+	l.Debug("spaces newer, copying S→A", "path", relPath,
+		"A_mtime", aMtime.UnixNano(), "S_mtime", sMtime.UnixNano())
+	if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
+		return fmt.Errorf("reconcile S→A: %w", err)
+	}
+	newInfo, err := os.Stat(archivePath)
+	if err != nil {
+		return fmt.Errorf("stat archive after reconcile: %w", err)
+	}
+	return store.UpdateEntryMtime(entry.Inode, newInfo.ModTime().UnixNano(), ptrInt64(newInfo.Size()))
+	// P4 creates spaces_view baseline
+}
+
 // p2ExternalAccept handles scenario #23: S_db=0, S_disk=1, selected=0, A_dirty=0.
 // S_disk is authority (system-unaware mode) → accept Spaces content, set selected=1.
 func p2ExternalAccept(ctx context.Context, store *Store, entry *Entry, relPath, archivePath, spacesPath string, hasQueued func() bool) error {
@@ -452,7 +523,18 @@ func p2ExternalConflict(ctx context.Context, store *Store, entry *Entry, relPath
 func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath, archivePath, spacesPath, trashRoot string, state State, hasQueued func() bool) error {
 	l := sub("P3")
 	if entry.Selected && !state.SDisk {
-		// Need to copy A→S
+		// SDb=true → file was previously in Spaces, now externally deleted
+		// (e.g. syncthing propagating a Mac deletion). Deselect instead of
+		// re-copying to avoid fighting syncthing in an infinite loop.
+		if state.SDb {
+			l.Debug("external Spaces deletion, deselecting", "path", relPath, "inode", entry.Inode)
+			if err := store.SetSelected([]uint64{entry.Inode}, false); err != nil {
+				return fmt.Errorf("deselect after external delete: %w", err)
+			}
+			return nil
+		}
+
+		// SDb=false → first sync, copy A→S
 		l.Debug("syncing to Spaces", "path", relPath, "type", entry.Type)
 
 		// Re-check selected before copy (UI race guard)
