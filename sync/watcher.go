@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,13 @@ func (w *Watcher) Start(ctx context.Context) error {
 			}
 
 			pending[relPath] = struct{}{}
+			// Ensure ancestor directories are also queued
+			// (P1 constraint: parent must be registered before child)
+			dir := filepath.Dir(relPath)
+			for dir != "." && dir != "" {
+				pending[dir] = struct{}{}
+				dir = filepath.Dir(dir)
+			}
 
 			// Reset debounce timer
 			timer.Reset(debounceInterval)
@@ -118,6 +126,7 @@ func (w *Watcher) Start(ctx context.Context) error {
 				for p := range pending {
 					paths = append(paths, p)
 				}
+				sort.Strings(paths) // parent-first ordering
 				w.queue.PushMany(paths)
 				l.Info("flushed", "count", len(paths))
 				pending = make(map[string]struct{})
