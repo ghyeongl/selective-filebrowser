@@ -282,8 +282,11 @@ const previewUrl = computed(() => {
     return "";
   }
 
-  if (fileStore.req.type === "image" && !fullSize.value) {
-    return api.getPreviewURL(fileStore.req, "big");
+  if (fileStore.req.type === "image") {
+    const ext = fileStore.req.extension?.toLowerCase();
+    if (!fullSize.value || ext === ".heic" || ext === ".heif") {
+      return api.getPreviewURL(fileStore.req, "big");
+    }
   }
 
   if (isEpub.value) {

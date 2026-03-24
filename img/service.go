@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"strings"
 
+	_ "github.com/strukturag/libheif-go" // registers HEIF/AVIF with image.RegisterFormat
 	"github.com/disintegration/imaging"
 	"github.com/dsoprea/go-exif/v3"
 	"github.com/marusama/semaphore/v2"
@@ -47,6 +49,7 @@ png
 gif
 tiff
 bmp
+heif
 )
 */
 type Format int
@@ -63,6 +66,8 @@ func (x Format) toImaging() imaging.Format {
 		return imaging.TIFF
 	case FormatBmp:
 		return imaging.BMP
+	case FormatHeif:
+		return imaging.JPEG
 	default:
 		return imaging.JPEG
 	}
@@ -99,6 +104,10 @@ fill
 type ResizeMode int
 
 func (s *Service) FormatFromExtension(ext string) (Format, error) {
+	switch strings.ToLower(ext) {
+	case ".heic", ".heif":
+		return FormatHeif, nil
+	}
 	format, err := imaging.FormatFromExtension(ext)
 	if err != nil {
 		return -1, ErrUnsupportedFormat
