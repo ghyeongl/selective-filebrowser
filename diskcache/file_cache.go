@@ -9,13 +9,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/spf13/afero"
 )
 
 type FileCache struct {
-	fs afero.Fs
+	fs      afero.Fs
+	maxSize int64 // 0 = unlimited
 
 	// granular locks
 	scopedLocks struct {
@@ -25,9 +28,14 @@ type FileCache struct {
 	}
 }
 
-func New(fs afero.Fs, root string) *FileCache {
+func New(fs afero.Fs, root string, maxSize ...int64) *FileCache {
+	var ms int64
+	if len(maxSize) > 0 {
+		ms = maxSize[0]
+	}
 	return &FileCache{
-		fs: afero.NewBasePathFs(fs, root),
+		fs:      afero.NewBasePathFs(fs, root),
+		maxSize: ms,
 	}
 }
 
@@ -45,6 +53,10 @@ func (f *FileCache) Store(_ context.Context, key string, value []byte) error {
 		return err
 	}
 
+	if f.maxSize > 0 {
+		f.evict()
+	}
+
 	return nil
 }
 
@@ -54,6 +66,10 @@ func (f *FileCache) Load(_ context.Context, key string) (value []byte, exist boo
 		return nil, ok, err
 	}
 	defer r.Close()
+
+	// Touch mtime to mark as recently used
+	fileName := f.getFileName(key)
+	_ = f.fs.Chtimes(fileName, time.Now(), time.Now())
 
 	value, err = io.ReadAll(r)
 	if err != nil {
@@ -72,6 +88,43 @@ func (f *FileCache) Delete(_ context.Context, key string) error {
 		return err
 	}
 	return nil
+}
+
+type cacheEntry struct {
+	path  string
+	size  int64
+	mtime time.Time
+}
+
+func (f *FileCache) evict() {
+	var entries []cacheEntry
+	var totalSize int64
+
+	_ = afero.Walk(f.fs, ".", func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		entries = append(entries, cacheEntry{path: path, size: info.Size(), mtime: info.ModTime()})
+		totalSize += info.Size()
+		return nil
+	})
+
+	if totalSize <= f.maxSize {
+		return
+	}
+
+	// Sort oldest first
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].mtime.Before(entries[j].mtime)
+	})
+
+	for _, e := range entries {
+		if totalSize <= f.maxSize {
+			break
+		}
+		_ = f.fs.Remove(e.path)
+		totalSize -= e.size
+	}
 }
 
 func (f *FileCache) open(key string) (afero.File, bool, error) {

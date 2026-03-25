@@ -179,7 +179,7 @@ user created with the credentials from options "username" and "password".`,
 			if err := os.MkdirAll(cacheDir, 0700); err != nil {
 				return fmt.Errorf("can't make directory %s: %w", cacheDir, err)
 			}
-			fileCache = diskcache.New(afero.NewOsFs(), cacheDir)
+			fileCache = diskcache.New(afero.NewOsFs(), cacheDir, 100*1024*1024) // 100MB
 		}
 
 		redisCacheURL := v.GetString("redisCacheUrl")
