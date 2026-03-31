@@ -167,7 +167,7 @@ const fetchData = async () => {
     document.title = `${res.name || t("sidebar.myFiles")} - ${t("files.files")} - ${name}`;
     // Fetch sync entries for this directory
     if (res.isDir) {
-      const syncPath = url.replace(/^\/files\/?/, "").replace(/\/$/, "") || "/";
+      const syncPath = decodeURIComponent(url.replace(/^\/files\/?/, "").replace(/\/$/, "")) || "/";
       await syncStore.fetchEntries(syncPath);
     }
 
