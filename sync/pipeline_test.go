@@ -141,8 +141,8 @@ func TestPipeline_DeselectFlow(t *testing.T) {
 	// Spaces file should be gone
 	assert.False(t, env.fileExists(filepath.Join(env.spacesRoot, "file.txt")))
 
-	// Trash should have it
-	assert.True(t, env.fileExists(env.trashRoot))
+	// ADisk=1 → direct delete, no trash
+	assert.False(t, env.fileExists(env.trashRoot))
 }
 
 // #32: S_dirty → S→A propagation

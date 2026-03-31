@@ -384,30 +384,32 @@ func TestE2E_Edge_InodeReplacement(t *testing.T) {
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 50, Name: "dir", Type: "dir", Mtime: 1000}))
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 100, ParentIno: 50, Name: "file.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000}))
 
-	// Same parent+name, different inode (simulating rm+touch)
+	// Same parent+name, same type, different inode — inode preserved, metadata updated
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 200, ParentIno: 50, Name: "file.txt", Type: "text", Size: ptr(int64(20)), Mtime: 2000}))
 
 	old, _ := store.GetEntry(100)
-	assert.Nil(t, old, "old inode should be gone")
+	require.NotNil(t, old, "original inode should be preserved")
+	assert.Equal(t, int64(20), *old.Size, "size should be updated")
+	assert.Equal(t, int64(2000), old.Mtime, "mtime should be updated")
 
 	newEntry, _ := store.GetEntry(200)
-	require.NotNil(t, newEntry)
-	assert.Equal(t, int64(2000), newEntry.Mtime)
+	assert.Nil(t, newEntry, "new inode should not exist as separate entry")
 }
 
-// Virtual root (parent_ino=0): UNIQUE(parent_ino, name) now works for root entries
+// Virtual root (parent_ino=0): UNIQUE(parent_ino, name) — inode preserved on same-type upsert
 func TestE2E_Edge_RootLevelUpsert(t *testing.T) {
 	store := setupTestDB(t)
 
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 100, Name: "root.txt", Type: "text", Size: ptr(int64(10)), Mtime: 1000}))
-	// Same name at root level — UpsertEntry triggers ON CONFLICT(parent_ino=0, name)
+	// Same name, same type at root level — ON CONFLICT updates metadata, keeps original inode
 	require.NoError(t, store.UpsertEntry(Entry{Inode: 200, Name: "root.txt", Type: "text", Size: ptr(int64(20)), Mtime: 2000}))
 
 	e1, _ := store.GetEntry(100)
 	e2, _ := store.GetEntry(200)
-	assert.Nil(t, e1, "old inode should be replaced by UpsertEntry conflict resolution")
-	assert.NotNil(t, e2, "new inode should exist")
-	assert.Equal(t, int64(20), *e2.Size)
+	assert.NotNil(t, e1, "original inode should be preserved")
+	assert.Equal(t, int64(20), *e1.Size, "metadata should be updated")
+	assert.Equal(t, int64(2000), e1.Mtime, "mtime should be updated")
+	assert.Nil(t, e2, "new inode should not exist as separate entry")
 }
 
 func fileExistsHelper(path string) bool {

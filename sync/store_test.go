@@ -125,18 +125,17 @@ func TestUpsertEntry_OnConflict(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Old inode 100 should be gone (replaced by conflict)
+	// Original inode 100 should be preserved (same type, inode not updated)
 	old, err := store.GetEntry(100)
 	require.NoError(t, err)
-	assert.Nil(t, old, "old inode should be replaced")
+	require.NotNil(t, old, "original inode should be preserved")
+	assert.Equal(t, int64(800), *old.Size, "size should be updated")
+	assert.Equal(t, int64(3000), old.Mtime, "mtime should be updated")
 
-	// New inode 200 should exist
+	// New inode 200 should not exist as separate entry
 	newEntry, err := store.GetEntry(200)
 	require.NoError(t, err)
-	require.NotNil(t, newEntry)
-	assert.Equal(t, uint64(200), newEntry.Inode)
-	assert.Equal(t, int64(800), *newEntry.Size)
-	assert.Equal(t, int64(3000), newEntry.Mtime)
+	assert.Nil(t, newEntry, "new inode should not exist as separate entry")
 }
 
 func TestUpdateEntryName(t *testing.T) {

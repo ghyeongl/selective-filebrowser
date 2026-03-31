@@ -553,8 +553,9 @@ func TestE2E_Scenario27_Removing_Clean(t *testing.T) {
 	env.run(t, "rm27.txt")
 
 	assert.False(t, env.fileExists(filepath.Join(env.spacesRoot, "rm27.txt")),
-		"#27: Spaces file should be soft-deleted")
-	assert.True(t, env.fileExists(env.trashRoot), "#27: trash dir should exist")
+		"#27: Spaces file should be removed")
+	// ADisk=1 → direct delete, no trash
+	assert.False(t, env.fileExists(env.trashRoot), "#27: trash dir should not exist (archive is backup)")
 }
 
 func TestE2E_Scenario28_Removing_SDirty(t *testing.T) {

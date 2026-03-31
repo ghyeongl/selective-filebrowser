@@ -576,13 +576,25 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 	}
 
 	if !entry.Selected && state.SDisk {
-		// Need to remove from Spaces
-		l.Debug("removing from Spaces", "path", relPath)
-		trashPath, err := SoftDelete(spacesPath, trashRoot)
-		if err != nil {
-			return fmt.Errorf("soft delete: %w", err)
+		if state.ADisk {
+			// Archives에 있으면 바로 삭제 (Archives가 백업)
+			if relPath == "" || relPath == "." || relPath == "/" {
+				return fmt.Errorf("refusing to remove spaces root")
+			}
+			l.Debug("removing from Spaces (archive exists)", "path", relPath)
+			if err := os.RemoveAll(spacesPath); err != nil {
+				return fmt.Errorf("remove from spaces: %w", err)
+			}
+			l.Debug("removed from Spaces", "path", relPath)
+		} else {
+			// Archives에 없으면 .trash로 이동 (안전장치)
+			l.Debug("soft-deleting from Spaces (no archive)", "path", relPath)
+			trashPath, err := SoftDelete(spacesPath, trashRoot)
+			if err != nil {
+				return fmt.Errorf("soft delete: %w", err)
+			}
+			l.Debug("soft-deleted", "path", relPath, "trashPath", trashPath)
 		}
-		l.Debug("soft-deleted", "path", relPath, "trashPath", trashPath)
 		return nil
 	}
 

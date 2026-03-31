@@ -36,11 +36,30 @@ func (s *Store) UpsertEntry(e Entry) error {
 		return fmt.Errorf("cleanup stale inode: %w", err)
 	}
 
+	// Type conflict: if an entry exists at this (parent_ino, name) with a different type,
+	// rename the old entry to {name}-conflict and mark it selected for user visibility.
+	var oldIno uint64
+	var oldType string
+	err = s.db.QueryRow(
+		`SELECT inode, type FROM entries WHERE parent_ino = ? AND name = ?`,
+		e.ParentIno, e.Name,
+	).Scan(&oldIno, &oldType)
+	if err == nil && oldType != e.Type {
+		conflictName := e.Name + "-conflict"
+		_, err = s.db.Exec(
+			`UPDATE entries SET name = ?, selected = 1 WHERE inode = ?`,
+			conflictName, oldIno,
+		)
+		if err != nil {
+			return fmt.Errorf("rename type conflict: %w", err)
+		}
+		sub("store").Info("type conflict renamed", "oldIno", oldIno, "oldType", oldType, "newType", e.Type, "conflictName", conflictName)
+	}
+
 	_, err = s.db.Exec(`
 		INSERT INTO entries (inode, parent_ino, name, type, size, mtime, selected)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(parent_ino, name) DO UPDATE SET
-			inode = excluded.inode,
 			type  = excluded.type,
 			size  = excluded.size,
 			mtime = excluded.mtime
