@@ -30,6 +30,7 @@ import (
 	"github.com/filebrowser/filebrowser/v2/settings"
 	"github.com/filebrowser/filebrowser/v2/storage"
 	ssync "github.com/filebrowser/filebrowser/v2/sync"
+	"github.com/filebrowser/filebrowser/v2/sync/ragflow"
 	"github.com/filebrowser/filebrowser/v2/users"
 )
 
@@ -115,6 +116,7 @@ func addServerFlags(flags *pflag.FlagSet) {
 	flags.String("archivesPath", "", "path to Archives directory for selective sync")
 	flags.String("spacesPath", "", "path to Spaces directory for selective sync")
 	flags.String("syncLog", "", "sync debug log path (e.g. /log/sync.log); empty=disabled, 'true'=legacy ./log/sync.log")
+	flags.Bool("ragflowEnabled", false, "enable RAGFlow document sync (configure via RAGFLOW_* env vars)")
 }
 
 var rootCmd = &cobra.Command{
@@ -279,6 +281,19 @@ user created with the credentials from options "username" and "password".`,
 
 			syncCtx, syncCancel := context.WithCancel(context.Background())
 			defer syncCancel()
+
+			// Set up RAGFlow worker if enabled
+			if v.GetBool("ragflowEnabled") {
+				ragflowCfg, cfgErr := ragflow.ParseConfigFromEnv()
+				if cfgErr != nil {
+					return fmt.Errorf("ragflow config: %w", cfgErr)
+				}
+				ragflowLog := ssync.Logger().With("comp", "ragflow")
+				ragflowWorker := ragflow.NewWorker(ragflowCfg, syncDB, server.SpacesPath, ragflowLog)
+				syncDaemon.SetRagflowWorker(ragflowWorker)
+				go ragflowWorker.Run(syncCtx)
+			}
+
 			go syncDaemon.Run(syncCtx)
 		}
 

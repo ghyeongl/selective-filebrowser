@@ -156,6 +156,32 @@ func SafeCopy(ctx context.Context, src, dst string, hasQueued func() bool) error
 	return nil
 }
 
+// RemoveFromSpaces removes a file or directory from Spaces and cleans up
+// spaces_view records. For directories, children are removed leaf-first
+// (recursive) before the directory itself.
+func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
+	l := sub("fileops")
+	if entry.Type == "dir" {
+		children, err := store.ListChildren(entry.Inode)
+		if err != nil {
+			return fmt.Errorf("list children for removal: %w", err)
+		}
+		for _, child := range children {
+			childPath := filepath.Join(spacesPath, child.Name)
+			if err := RemoveFromSpaces(childPath, &child, store); err != nil {
+				return err
+			}
+		}
+	}
+	if err := os.Remove(spacesPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove from spaces: %w", err)
+	}
+	if err := store.DeleteSpacesView(entry.Inode); err != nil {
+		l.Warn("DeleteSpacesView failed during removal", "inode", entry.Inode, "err", err)
+	}
+	return nil
+}
+
 // SoftDelete moves a file to the trash directory (.trash/YYYY-MM-DD/).
 // Returns the final trash path.
 func SoftDelete(path, trashRoot string) (string, error) {

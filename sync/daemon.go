@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"github.com/filebrowser/filebrowser/v2/sync/ragflow"
 )
 
 // Daemon orchestrates the sync process: initial enqueue, watcher, and eval queue worker.
@@ -20,6 +22,7 @@ type Daemon struct {
 	pathCache    *PathCache
 	events       *EventBus
 	scanning     atomic.Bool
+	ragflow      *ragflow.Worker // nil if RAGFlow not configured
 }
 
 // NewDaemon creates a new sync daemon.
@@ -46,6 +49,11 @@ func (d *Daemon) Queue() *EvalQueue {
 // Events returns the event bus for SSE broadcasting.
 func (d *Daemon) Events() *EventBus {
 	return d.events
+}
+
+// SetRagflowWorker attaches a RAGFlow worker to the daemon.
+func (d *Daemon) SetRagflowWorker(w *ragflow.Worker) {
+	d.ragflow = w
 }
 
 // Run starts the daemon. It starts the watcher, enqueues all paths for initial
@@ -139,6 +147,10 @@ func (d *Daemon) Run(ctx context.Context) {
 			d.emitStatus(path)
 			d.emitParentCounts(path)
 		}
+
+		// RAGFlow hook: forward eligible files after pipeline resolves Spaces state
+		d.ragflowCheck(path)
+
 		processed++
 		if time.Since(lastLog) >= 10*time.Minute {
 			l.Info("worker progress", "processed", processed, "remaining", d.queue.Len())
@@ -151,10 +163,10 @@ func (d *Daemon) Run(ctx context.Context) {
 	l.Info("sync daemon stopped")
 }
 
-// rollbackState aligns DB state with current disk reality after a pipeline failure.
-// Principle: disk is truth. If the pipeline couldn't change disk, adjust DB to match.
+// rollbackState aligns DB observed state with current disk reality after a pipeline failure.
+// Only spaces_view is adjusted. selected (desired state) is NEVER changed here —
+// it is owned exclusively by user actions (HTTP select/deselect).
 func (d *Daemon) rollbackState(relPath string) {
-	l := sub("daemon")
 	spacesPath := filepath.Join(d.spacesRoot, relPath)
 	_, err := os.Stat(spacesPath)
 	spacesExists := err == nil
@@ -162,21 +174,6 @@ func (d *Daemon) rollbackState(relPath string) {
 	entry, sv, lookupErr := lookupDB(d.store, d.archivesRoot, relPath)
 	if lookupErr != nil || entry == nil {
 		return
-	}
-
-	// Align selected with disk reality
-	if spacesExists && !entry.Selected {
-		if err := d.store.SetSelected([]uint64{entry.Inode}, true); err != nil {
-			l.Error("rollback SetSelected failed", "path", relPath, "err", err)
-			return
-		}
-		l.Warn("rollback: selected=true (Spaces file exists)", "path", relPath)
-	} else if !spacesExists && entry.Selected {
-		if err := d.store.SetSelected([]uint64{entry.Inode}, false); err != nil {
-			l.Error("rollback SetSelected failed", "path", relPath, "err", err)
-			return
-		}
-		l.Warn("rollback: selected=false (Spaces file missing)", "path", relPath)
 	}
 
 	// Align spaces_view with disk reality
@@ -246,6 +243,23 @@ func (d *Daemon) emitParentCounts(relPath string) {
 		ChildStableCount: &stable,
 		ChildTotalCount:  &total,
 	})
+}
+
+// ragflowCheck forwards eligible Spaces file events to the RAGFlow worker.
+func (d *Daemon) ragflowCheck(relPath string) {
+	if d.ragflow == nil {
+		return
+	}
+	if !d.ragflow.GetConfig().IsEligible(relPath) {
+		return
+	}
+
+	spacesPath := filepath.Join(d.spacesRoot, relPath)
+	if _, err := os.Stat(spacesPath); err == nil {
+		d.ragflow.Enqueue(relPath, ragflow.ActionUpsert)
+	} else if d.ragflow.HasCacheEntry(relPath) {
+		d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
+	}
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.

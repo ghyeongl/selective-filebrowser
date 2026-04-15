@@ -232,6 +232,17 @@ func setSelectedRecursive(tx *sql.Tx, parentIno uint64, selected bool) error {
 	return nil
 }
 
+// SetSelectedSingle updates the selected flag for a single entry (non-recursive).
+// Use this instead of SetSelected when only the specific entry should be updated,
+// not its descendants (e.g., pipeline auto-select from external Spaces introduction).
+func (s *Store) SetSelectedSingle(inode uint64, selected bool) error {
+	_, err := s.db.Exec("UPDATE entries SET selected = ? WHERE inode = ?", selected, inode)
+	if err != nil {
+		return fmt.Errorf("set selected single: %w", err)
+	}
+	return nil
+}
+
 // UpsertSpacesView inserts or updates a spaces_view record.
 func (s *Store) UpsertSpacesView(sv SpacesView) error {
 	_, err := s.db.Exec(`

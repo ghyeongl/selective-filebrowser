@@ -66,6 +66,11 @@ func InitLogger(logDir string) {
 	logger = slog.New(&multiHandler{handlers: handlers})
 }
 
+// Logger returns the package-level logger for use by sub-packages.
+func Logger() *slog.Logger {
+	return logger
+}
+
 // sub returns a child logger tagged with the given component name.
 func sub(component string) *slog.Logger {
 	return logger.With("comp", component)

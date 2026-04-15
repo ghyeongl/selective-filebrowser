@@ -461,7 +461,7 @@ func p2ExternalAccept(ctx context.Context, store *Store, entry *Entry, relPath, 
 		}
 	}
 
-	return store.SetSelected([]uint64{entry.Inode}, true)
+	return store.SetSelectedSingle(entry.Inode, true)
 }
 
 // p2ExternalConflict handles scenario #24: S_db=0, S_disk=1, selected=0, A_dirty=1.
@@ -489,7 +489,7 @@ func p2ExternalConflict(ctx context.Context, store *Store, entry *Entry, relPath
 	if err := store.UpdateEntryMtime(entry.Inode, conflictInfo.ModTime().UnixNano(), ptrInt64(conflictInfo.Size())); err != nil {
 		return fmt.Errorf("update conflict mtime: %w", err)
 	}
-	if err := store.SetSelected([]uint64{entry.Inode}, true); err != nil {
+	if err := store.SetSelectedSingle(entry.Inode, true); err != nil {
 		return fmt.Errorf("set conflict selected: %w", err)
 	}
 	l.Debug("conflict entry updated", "inode", entry.Inode, "name", conflictName)
@@ -528,7 +528,7 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 		// re-copying to avoid fighting syncthing in an infinite loop.
 		if state.SDb {
 			l.Debug("external Spaces deletion, deselecting", "path", relPath, "inode", entry.Inode)
-			if err := store.SetSelected([]uint64{entry.Inode}, false); err != nil {
+			if err := store.SetSelectedSingle(entry.Inode, false); err != nil {
 				return fmt.Errorf("deselect after external delete: %w", err)
 			}
 			return nil
@@ -577,12 +577,13 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 
 	if !entry.Selected && state.SDisk {
 		if state.ADisk {
-			// Archives에 있으면 바로 삭제 (Archives가 백업)
+			// Archives에 있으면 삭제 (Archives가 백업)
+			// RemoveFromSpaces: leaf-first 재귀 삭제 + spaces_view 정리
 			if relPath == "" || relPath == "." || relPath == "/" {
 				return fmt.Errorf("refusing to remove spaces root")
 			}
 			l.Debug("removing from Spaces (archive exists)", "path", relPath)
-			if err := os.RemoveAll(spacesPath); err != nil {
+			if err := RemoveFromSpaces(spacesPath, entry, store); err != nil {
 				return fmt.Errorf("remove from spaces: %w", err)
 			}
 			l.Debug("removed from Spaces", "path", relPath)

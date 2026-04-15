@@ -9,7 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -32,6 +32,29 @@ CREATE TABLE IF NOT EXISTS spaces_view (
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+`
+
+const ragflowSchema = `
+CREATE TABLE IF NOT EXISTS ragflow_queue (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    rel_path   TEXT NOT NULL,
+    action     TEXT NOT NULL,
+    route_idx  INTEGER NOT NULL,
+    retries    INTEGER NOT NULL DEFAULT 0,
+    next_retry INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    error      TEXT,
+    dead       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS ragflow_hash_cache (
+    rel_path    TEXT NOT NULL,
+    route_idx   INTEGER NOT NULL,
+    sha256      TEXT NOT NULL,
+    doc_id      TEXT,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (rel_path, route_idx)
 );
 `
 
@@ -79,6 +102,9 @@ func migrate(db *sql.DB) error {
 		if _, execErr := db.Exec(schema); execErr != nil {
 			return fmt.Errorf("create schema: %w", execErr)
 		}
+		if _, execErr := db.Exec(ragflowSchema); execErr != nil {
+			return fmt.Errorf("create ragflow schema: %w", execErr)
+		}
 		_, execErr := db.Exec("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", schemaVersion)
 		if execErr != nil {
 			return fmt.Errorf("set schema version: %w", execErr)
@@ -87,8 +113,19 @@ func migrate(db *sql.DB) error {
 		return nil
 	}
 
-	if version < schemaVersion {
+	if version < 3 {
 		return fmt.Errorf("unsupported schema version %d (expected %d), delete sync.db to recreate", version, schemaVersion)
+	}
+
+	if version == 3 {
+		l.Info("migrating schema v3 → v4: adding RAGFlow tables")
+		if _, err := db.Exec(ragflowSchema); err != nil {
+			return fmt.Errorf("create ragflow tables: %w", err)
+		}
+		if _, err := db.Exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", schemaVersion); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		l.Info("migration complete", "version", schemaVersion)
 	}
 
 	l.Debug("schema up to date", slog.Int("version", version))
