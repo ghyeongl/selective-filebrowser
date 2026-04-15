@@ -144,7 +144,8 @@ func (c *Client) FindByName(ctx context.Context, fileName string) (string, error
 	return list.Docs[0].ID, nil
 }
 
-// Parse triggers document parsing and waits for completion.
+// Parse triggers document parsing and waits for completion (no timeout).
+// Blocks until DONE/FAIL/CANCEL or ctx is cancelled, ensuring one parse at a time.
 func (c *Client) Parse(ctx context.Context, docID string) error {
 	u := fmt.Sprintf("%s/api/v1/datasets/%s/chunks", c.apiBase, c.datasetID)
 	payload, _ := json.Marshal(map[string][]string{"document_ids": {docID}})
@@ -170,11 +171,10 @@ func (c *Client) Parse(ctx context.Context, docID string) error {
 		return &APIError{Code: r.Code, Message: r.Message, HTTPStatus: resp.StatusCode}
 	}
 
-	return c.waitForParse(ctx, docID, 5*time.Minute)
+	return c.waitForParse(ctx, docID)
 }
 
-func (c *Client) waitForParse(ctx context.Context, docID string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func (c *Client) waitForParse(ctx context.Context, docID string) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
@@ -183,9 +183,6 @@ func (c *Client) waitForParse(ctx context.Context, docID string, timeout time.Du
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("parse timeout after %v for doc %s", timeout, docID)
-			}
 			status, err := c.getDocStatus(ctx, docID)
 			if err != nil {
 				return fmt.Errorf("poll parse status: %w", err)
