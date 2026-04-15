@@ -306,6 +306,7 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 
 // pushInodesToQueue resolves inodes to relative paths and pushes them
 // to the eval queue for the daemon worker to process.
+// User-driven select/deselect queues the whole known subtree because the intent is recursive.
 func (h *Handlers) pushInodesToQueue(inodes []uint64) {
 	l := sub("handlers")
 	for _, ino := range inodes {
@@ -351,6 +352,7 @@ func (h *Handlers) resolveRelPath(entry *Entry) string {
 }
 
 func (h *Handlers) pushChildrenToQueue(parentIno uint64, parentPath string) {
+	// Queue each descendant so it can realize the new desired state via its own pipeline pass.
 	children, err := h.store.ListChildren(parentIno)
 	if err != nil {
 		return
@@ -459,4 +461,3 @@ func (h *Handlers) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-

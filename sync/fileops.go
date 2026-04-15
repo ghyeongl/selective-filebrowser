@@ -172,6 +172,9 @@ func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
 				return err
 			}
 		}
+		if err := removeResidualEntries(spacesPath); err != nil {
+			return fmt.Errorf("remove residual entries: %w", err)
+		}
 	}
 	if err := os.Remove(spacesPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove from spaces: %w", err)
@@ -179,6 +182,30 @@ func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
 	if err := store.DeleteSpacesView(entry.Inode); err != nil {
 		l.Warn("DeleteSpacesView failed during removal", "inode", entry.Inode, "err", err)
 	}
+	return nil
+}
+
+func removeResidualEntries(dirPath string) error {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read residual dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		childPath := filepath.Join(dirPath, entry.Name())
+		if entry.IsDir() {
+			if err := removeResidualEntries(childPath); err != nil {
+				return err
+			}
+		}
+		if err := os.Remove(childPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove residual path: %w", err)
+		}
+	}
+
 	return nil
 }
 

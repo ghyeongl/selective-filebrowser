@@ -39,8 +39,52 @@ func setupPipelineEnv(t *testing.T) *pipelineEnv {
 
 func (env *pipelineEnv) run(t *testing.T, relPath string) {
 	t.Helper()
-	err := RunPipeline(context.Background(), relPath, env.store, env.archivesRoot, env.spacesRoot, env.trashRoot, nil)
+	q := NewEvalQueue()
+	q.PushPriority(relPath)
+	done := make(chan struct{})
+
+	for q.Len() > 0 {
+		path, ok := q.Pop(done)
+		require.True(t, ok)
+
+		entry, sv, err := lookupDB(env.store, env.archivesRoot, path)
+		require.NoError(t, err)
+		archiveMtime, archiveIsDir, _, _ := statFile(filepath.Join(env.archivesRoot, path))
+		spacesMtime, spacesIsDir, _, _ := statFile(filepath.Join(env.spacesRoot, path))
+		queueChildren := shouldQueueDescendants(entry, archiveIsDir, spacesIsDir, ComputeState(entry, sv, archiveMtime, spacesMtime))
+
+		err = RunPipeline(context.Background(), path, env.store, env.archivesRoot, env.spacesRoot, env.trashRoot, func() bool {
+			return q.Has(path)
+		})
+		require.NoError(t, err)
+
+		if queueChildren {
+			env.queueDescendants(t, q, path)
+		}
+	}
+}
+
+func (env *pipelineEnv) queueDescendants(t *testing.T, q *EvalQueue, parentPath string) {
+	t.Helper()
+
+	entry, _, err := lookupDB(env.store, env.archivesRoot, parentPath)
 	require.NoError(t, err)
+	if entry == nil || entry.Type != "dir" {
+		return
+	}
+
+	children, err := env.store.ListChildren(entry.Inode)
+	require.NoError(t, err)
+	for _, child := range children {
+		childPath := child.Name
+		if parentPath != "" {
+			childPath = parentPath + "/" + child.Name
+		}
+		q.Push(childPath)
+		if child.Type == "dir" {
+			env.queueDescendants(t, q, childPath)
+		}
+	}
 }
 
 func (env *pipelineEnv) writeArchive(t *testing.T, relPath string, content []byte) {
@@ -452,6 +496,119 @@ func TestPipeline_Scenario24_ExternalSpacesConflict(t *testing.T) {
 	sv, err := env.store.GetSpacesView(newEntry.Inode)
 	require.NoError(t, err)
 	assert.NotNil(t, sv, "spaces_view should be created for new entry")
+}
+
+func TestPipeline_DirectoryExternalAcceptReconcilesDescendants(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(env.archivesRoot, "docs", "sub"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(env.archivesRoot, "docs", "sub", "note.txt"), []byte("archive"), 0644))
+
+	env.run(t, "docs")
+	env.run(t, "docs/sub")
+	env.run(t, "docs/sub/note.txt")
+
+	docs, err := env.store.GetEntryByPath(0, "docs")
+	require.NoError(t, err)
+	require.NotNil(t, docs)
+
+	sub, err := env.store.GetEntryByPath(docs.Inode, "sub")
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+
+	note, err := env.store.GetEntryByPath(sub.Inode, "note.txt")
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	assert.False(t, docs.Selected)
+	assert.False(t, sub.Selected)
+	assert.False(t, note.Selected)
+
+	env.writeSpaces(t, "docs/sub/note.txt", []byte("spaces"))
+	env.run(t, "docs")
+
+	docs, err = env.store.GetEntry(docs.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, docs)
+	assert.True(t, docs.Selected)
+
+	sub, err = env.store.GetEntry(sub.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	assert.True(t, sub.Selected)
+
+	note, err = env.store.GetEntry(note.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	assert.True(t, note.Selected)
+
+	sv, err := env.store.GetSpacesView(sub.Inode)
+	require.NoError(t, err)
+	assert.NotNil(t, sv)
+
+	sv, err = env.store.GetSpacesView(note.Inode)
+	require.NoError(t, err)
+	assert.NotNil(t, sv)
+
+	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "docs", "sub", "note.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("spaces"), got)
+}
+
+func TestPipeline_DirectoryExternalDeleteReconcilesDescendants(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(env.archivesRoot, "docs", "sub"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(env.archivesRoot, "docs", "sub", "note.txt"), []byte("synced"), 0644))
+	env.writeSpaces(t, "docs/sub/note.txt", []byte("synced"))
+
+	env.run(t, "docs")
+	env.run(t, "docs/sub")
+	env.run(t, "docs/sub/note.txt")
+
+	docs, err := env.store.GetEntryByPath(0, "docs")
+	require.NoError(t, err)
+	require.NotNil(t, docs)
+
+	sub, err := env.store.GetEntryByPath(docs.Inode, "sub")
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+
+	note, err := env.store.GetEntryByPath(sub.Inode, "note.txt")
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	assert.True(t, docs.Selected)
+	assert.True(t, sub.Selected)
+	assert.True(t, note.Selected)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(env.spacesRoot, "docs")))
+	env.run(t, "docs")
+
+	docs, err = env.store.GetEntry(docs.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, docs)
+	assert.False(t, docs.Selected)
+
+	sub, err = env.store.GetEntry(sub.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	assert.False(t, sub.Selected)
+
+	note, err = env.store.GetEntry(note.Inode)
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	assert.False(t, note.Selected)
+
+	sv, err := env.store.GetSpacesView(docs.Inode)
+	require.NoError(t, err)
+	assert.Nil(t, sv)
+
+	sv, err = env.store.GetSpacesView(sub.Inode)
+	require.NoError(t, err)
+	assert.Nil(t, sv)
+
+	sv, err = env.store.GetSpacesView(note.Inode)
+	require.NoError(t, err)
+	assert.Nil(t, sv)
 }
 
 // Test splitPath utility

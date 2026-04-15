@@ -111,6 +111,8 @@ func (d *Daemon) Run(ctx context.Context) {
 		}
 
 		prevStatus := d.computeUIStatus(path)
+		shouldQueueChildren := d.shouldQueueDescendants(path)
+		pipelineFailed := false
 
 		if err := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err != nil {
 			if ctx.Err() != nil {
@@ -140,7 +142,12 @@ func (d *Daemon) Run(ctx context.Context) {
 				l.Error("pipeline retry failed, rollback maintained", "path", path, "err", err2)
 				d.rollbackState(path)
 				d.emitStatus(path)
+				pipelineFailed = true
 			}
+		}
+
+		if shouldQueueChildren && !pipelineFailed {
+			d.queueDescendants(path)
 		}
 
 		if newStatus := d.computeUIStatus(path); newStatus != prevStatus {
@@ -341,4 +348,25 @@ func (d *Daemon) reconcileChildren(parentIno uint64, parentPath string) {
 			d.reconcileChildren(child.Inode, relPath)
 		}
 	}
+}
+
+func (d *Daemon) shouldQueueDescendants(relPath string) bool {
+	entry, sv, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil {
+		return false
+	}
+
+	archiveMtime, archiveIsDir, _, _ := statFile(filepath.Join(d.archivesRoot, relPath))
+	spacesMtime, spacesIsDir, _, _ := statFile(filepath.Join(d.spacesRoot, relPath))
+	return shouldQueueDescendants(entry, archiveIsDir, spacesIsDir, ComputeState(entry, sv, archiveMtime, spacesMtime))
+}
+
+func (d *Daemon) queueDescendants(relPath string) {
+	entry, _, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil || entry == nil || entry.Type != "dir" {
+		return
+	}
+
+	// Follow-up work stays on the eval queue so descendants converge in the same worker model as other paths.
+	d.reconcileChildren(entry.Inode, relPath)
 }

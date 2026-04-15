@@ -147,6 +147,21 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 	return nil
 }
 
+func shouldQueueDescendants(entry *Entry, archiveIsDir, spacesIsDir *bool, state State) bool {
+	// Descendants need their own queued pipeline passes when a directory's
+	// Spaces visibility flips, because SetSelectedSingle only updates the parent row.
+	if state.SDb == state.SDisk {
+		return false
+	}
+	if entry != nil {
+		return entry.Type == "dir"
+	}
+	if spacesIsDir != nil && *spacesIsDir {
+		return true
+	}
+	return archiveIsDir != nil && *archiveIsDir
+}
+
 // p0 handles Archives disk recovery when A_disk=0.
 func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath, archivePath, spacesPath string, state State, hasQueued func() bool) error {
 	l := sub("P0")
@@ -284,65 +299,65 @@ func p2(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 		if !entry.Selected && state.SDb {
 			l.Debug("deselect priority, ignoring S_dirty", "path", relPath)
 		} else {
-		// Both dirty → conflict
-		l.Warn("conflict: both dirty", "path", relPath)
+			// Both dirty → conflict
+			l.Warn("conflict: both dirty", "path", relPath)
 
-		// 1) DB: update existing entry's name to conflict name
-		conflictName := ConflictName(archivePath)
-		if err := store.UpdateEntryName(entry.Inode, conflictName); err != nil {
-			return fmt.Errorf("update entry name for conflict: %w", err)
-		}
-		l.Debug("renamed DB entry", "inode", entry.Inode, "newName", conflictName)
-
-		// 2) Disk: rename archive to conflict name
-		conflictPath := filepath.Join(filepath.Dir(archivePath), conflictName)
-		if err := os.Rename(archivePath, conflictPath); err != nil {
-			return fmt.Errorf("rename conflict: %w", err)
-		}
-		l.Debug("renamed archive file", "from", archivePath, "to", conflictPath)
-
-		// 3) SafeCopy S→A (Spaces wins) → creates new file with new inode
-		if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
-			return fmt.Errorf("copy S→A after conflict: %w", err)
-		}
-		l.Debug("SafeCopy S->A after conflict", "path", relPath)
-
-		// 4) Register the new archive file (new inode) in DB
-		aInfo, err := os.Stat(archivePath)
-		if err != nil {
-			return fmt.Errorf("stat new archive: %w", err)
-		}
-		newStat, ok := aInfo.Sys().(*syscall.Stat_t)
-		if !ok {
-			return fmt.Errorf("failed to get inode for new archive")
-		}
-		if err := store.UpsertEntry(Entry{
-			Inode:     newStat.Ino,
-			ParentIno: entry.ParentIno,
-			Name:      entry.Name,
-			Type:      entry.Type,
-			Size:      ptrInt64(aInfo.Size()),
-			Mtime:     aInfo.ModTime().UnixNano(),
-			Selected:  true,
-		}); err != nil {
-			return fmt.Errorf("register new archive entry: %w", err)
-		}
-		l.Debug("conflict resolved", "path", relPath, "newInode", newStat.Ino, "oldInode", entry.Inode)
-
-		// 5) Update spaces_view for the new entry
-		if sv != nil {
-			sInfo, err := os.Stat(spacesPath)
-			if err == nil {
-				sv.EntryIno = newStat.Ino
-				sv.SyncedMtime = sInfo.ModTime().UnixNano()
-				sv.CheckedAt = nowNano()
-				if err := store.UpsertSpacesView(*sv); err != nil {
-					return fmt.Errorf("update spaces_view: %w", err)
-				}
-				l.Debug("spaces_view updated for conflict winner", "inode", newStat.Ino)
+			// 1) DB: update existing entry's name to conflict name
+			conflictName := ConflictName(archivePath)
+			if err := store.UpdateEntryName(entry.Inode, conflictName); err != nil {
+				return fmt.Errorf("update entry name for conflict: %w", err)
 			}
-		}
-		return nil
+			l.Debug("renamed DB entry", "inode", entry.Inode, "newName", conflictName)
+
+			// 2) Disk: rename archive to conflict name
+			conflictPath := filepath.Join(filepath.Dir(archivePath), conflictName)
+			if err := os.Rename(archivePath, conflictPath); err != nil {
+				return fmt.Errorf("rename conflict: %w", err)
+			}
+			l.Debug("renamed archive file", "from", archivePath, "to", conflictPath)
+
+			// 3) SafeCopy S→A (Spaces wins) → creates new file with new inode
+			if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
+				return fmt.Errorf("copy S→A after conflict: %w", err)
+			}
+			l.Debug("SafeCopy S->A after conflict", "path", relPath)
+
+			// 4) Register the new archive file (new inode) in DB
+			aInfo, err := os.Stat(archivePath)
+			if err != nil {
+				return fmt.Errorf("stat new archive: %w", err)
+			}
+			newStat, ok := aInfo.Sys().(*syscall.Stat_t)
+			if !ok {
+				return fmt.Errorf("failed to get inode for new archive")
+			}
+			if err := store.UpsertEntry(Entry{
+				Inode:     newStat.Ino,
+				ParentIno: entry.ParentIno,
+				Name:      entry.Name,
+				Type:      entry.Type,
+				Size:      ptrInt64(aInfo.Size()),
+				Mtime:     aInfo.ModTime().UnixNano(),
+				Selected:  true,
+			}); err != nil {
+				return fmt.Errorf("register new archive entry: %w", err)
+			}
+			l.Debug("conflict resolved", "path", relPath, "newInode", newStat.Ino, "oldInode", entry.Inode)
+
+			// 5) Update spaces_view for the new entry
+			if sv != nil {
+				sInfo, err := os.Stat(spacesPath)
+				if err == nil {
+					sv.EntryIno = newStat.Ino
+					sv.SyncedMtime = sInfo.ModTime().UnixNano()
+					sv.CheckedAt = nowNano()
+					if err := store.UpsertSpacesView(*sv); err != nil {
+						return fmt.Errorf("update spaces_view: %w", err)
+					}
+					l.Debug("spaces_view updated for conflict winner", "inode", newStat.Ino)
+				}
+			}
+			return nil
 		}
 	}
 
@@ -444,6 +459,7 @@ func p2Reconcile(ctx context.Context, store *Store, entry *Entry, relPath, archi
 
 // p2ExternalAccept handles scenario #23: S_db=0, S_disk=1, selected=0, A_dirty=0.
 // S_disk is authority (system-unaware mode) → accept Spaces content, set selected=1.
+// Only the current row is flipped here; descendants need their own follow-up evaluation.
 func p2ExternalAccept(ctx context.Context, store *Store, entry *Entry, relPath, archivePath, spacesPath string, hasQueued func() bool) error {
 	l := sub("P2")
 	l.Debug("external Spaces accept (spoke wins)", "path", relPath)
@@ -467,6 +483,7 @@ func p2ExternalAccept(ctx context.Context, store *Store, entry *Entry, relPath, 
 // p2ExternalConflict handles scenario #24: S_db=0, S_disk=1, selected=0, A_dirty=1.
 // Archives was modified AND an external file appeared in Spaces → conflict.
 // Spoke wins: rename Archives to conflict, copy S→A, register new entry.
+// The conflict row is updated locally, while descendants still reconcile path-by-path.
 func p2ExternalConflict(ctx context.Context, store *Store, entry *Entry, relPath, archivePath, spacesPath, archivesRoot string, hasQueued func() bool) error {
 	l := sub("P2")
 	l.Warn("external conflict (spoke wins)", "path", relPath)

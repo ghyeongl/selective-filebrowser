@@ -176,6 +176,7 @@ func (s *Store) ListChildren(parentIno uint64) ([]Entry, error) {
 
 // SetSelected updates the selected flag for the given inodes.
 // If recursive is true, all descendants of directory entries are also updated.
+// This is used for user intent, so the whole subtree is updated immediately.
 func (s *Store) SetSelected(inodes []uint64, selected bool) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -235,6 +236,7 @@ func setSelectedRecursive(tx *sql.Tx, parentIno uint64, selected bool) error {
 // SetSelectedSingle updates the selected flag for a single entry (non-recursive).
 // Use this instead of SetSelected when only the specific entry should be updated,
 // not its descendants (e.g., pipeline auto-select from external Spaces introduction).
+// Descendants must be re-evaluated separately instead of inheriting this bit eagerly.
 func (s *Store) SetSelectedSingle(inode uint64, selected bool) error {
 	_, err := s.db.Exec("UPDATE entries SET selected = ? WHERE inode = ?", selected, inode)
 	if err != nil {

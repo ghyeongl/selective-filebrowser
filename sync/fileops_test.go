@@ -176,6 +176,46 @@ func TestSoftDelete_NameCollision(t *testing.T) {
 	assert.Len(t, entries, 3)
 }
 
+func TestRemoveFromSpaces_RemovesResidualEntries(t *testing.T) {
+	store := setupTestDB(t)
+	dir := t.TempDir()
+	spacesPath := filepath.Join(dir, "docs")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(spacesPath, "extra"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(spacesPath, "tracked.txt"), []byte("tracked"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(spacesPath, ".DS_Store"), []byte("ignored"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(spacesPath, "extra", "orphan.txt"), []byte("orphan"), 0644))
+
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, Name: "docs", Type: "dir", Mtime: 1}))
+	require.NoError(t, store.UpsertEntry(Entry{
+		Inode:     2,
+		ParentIno: 1,
+		Name:      "tracked.txt",
+		Type:      "text",
+		Size:      ptr(int64(7)),
+		Mtime:     1,
+	}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 1, SyncedMtime: 1, CheckedAt: 1}))
+	require.NoError(t, store.UpsertSpacesView(SpacesView{EntryIno: 2, SyncedMtime: 1, CheckedAt: 1}))
+
+	entry, err := store.GetEntry(1)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	require.NoError(t, RemoveFromSpaces(spacesPath, entry, store))
+
+	_, err = os.Stat(spacesPath)
+	assert.True(t, os.IsNotExist(err))
+
+	sv, err := store.GetSpacesView(1)
+	require.NoError(t, err)
+	assert.Nil(t, sv)
+
+	sv, err = store.GetSpacesView(2)
+	require.NoError(t, err)
+	assert.Nil(t, sv)
+}
+
 func TestRenameConflict(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "report.txt")
