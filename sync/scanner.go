@@ -43,6 +43,16 @@ func ScanDir(root string, ignore *SyncIgnore) (map[string]FileStat, error) {
 			return nil
 		}
 
+		// Skip symlinks (scanner uses lstat, pipeline uses stat — inconsistent)
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		// Skip gitlink files (.git file in submodules, not .git directory)
+		if d.Name() == ".git" && !d.IsDir() {
+			return nil
+		}
+
 		info, err := d.Info()
 		if err != nil {
 			l.Warn("scan stat error", "path", path, "err", err)

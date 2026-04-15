@@ -86,6 +86,17 @@ func (w *Watcher) Start(ctx context.Context) error {
 				continue
 			}
 
+			// Skip symlinks and gitlink files
+			if info, err := os.Lstat(event.Name); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					continue
+				}
+				// Skip gitlink files (.git file in submodules, not .git directory)
+				if base == ".git" && !info.IsDir() {
+					continue
+				}
+			}
+
 			pending[relPath] = struct{}{}
 			// Ensure ancestor directories are also queued
 			// (P1 constraint: parent must be registered before child)
