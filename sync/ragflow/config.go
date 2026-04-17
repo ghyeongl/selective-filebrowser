@@ -141,7 +141,15 @@ func SkipText(ext, relPath string, size int64) bool {
 		}
 		return size > maxTextSize
 
-	case ".txt", ".csv":
+	case ".txt":
+		for _, prefix := range txtDenyPrefixes {
+			if strings.HasPrefix(relPath, prefix) {
+				return true
+			}
+		}
+		return size > maxTextSize
+
+	case ".csv":
 		return size > maxTextSize
 	}
 	return false
@@ -152,4 +160,9 @@ func SkipText(ext, relPath string, size int64) bool {
 var mdAllowedPrefixes = []string{
 	"Docu/Environments/obsidian-personal/",
 	"Work/Docs/GPU창업/obsidian-x10lab/",
+}
+
+// txtDenyPrefixes lists prefixes where .txt files are excluded from indexing.
+var txtDenyPrefixes = []string{
+	"Work/Devs/",
 }
