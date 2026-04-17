@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const maxRetries = 3
@@ -31,7 +32,7 @@ func NewWorker(config Config, db *sql.DB, spacesRoot string, log *slog.Logger) *
 	return &Worker{
 		config:     config,
 		clients:    clients,
-		queue:      NewJobQueue(db),
+		queue:      NewJobQueue(100_000),
 		hashCache:  NewHashCache(db),
 		spacesRoot: spacesRoot,
 		log:        log,
@@ -40,58 +41,64 @@ func NewWorker(config Config, db *sql.DB, spacesRoot string, log *slog.Logger) *
 
 // Run processes the queue until ctx is cancelled. Blocks.
 func (w *Worker) Run(ctx context.Context) {
-	// Recover any jobs that were in-flight when the process last stopped.
-	if n := w.queue.RecoverInFlight(); n > 0 {
-		w.log.Info("recovered in-flight jobs from previous run", "count", n)
-	}
-
-	w.log.Info("ragflow worker started", "routes", len(w.config.Routes), "pending", w.queue.Len())
+	w.log.Info("ragflow worker started", "routes", len(w.config.Routes))
 
 	for {
-		job, ok := w.queue.PopReady(ctx)
+		job, ok := w.queue.Pop(ctx)
 		if !ok {
 			w.log.Info("ragflow worker stopping")
 			return
 		}
 
-		w.log.Debug("processing job", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "retry", job.Retries)
+		w.log.Debug("processing job", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
 
-		var err error
+		var process func(context.Context, Job) error
 		switch job.Action {
 		case ActionUpsert:
-			err = w.processUpsert(ctx, job)
+			process = w.processUpsert
 		case ActionDelete:
-			err = w.processDelete(ctx, job)
+			process = w.processDelete
 		default:
 			w.log.Error("unknown action", "action", job.Action, "path", job.RelPath)
-			w.queue.Complete(job.ID)
 			continue
 		}
 
-		if err != nil {
+		if err := w.retry(ctx, job, process); err != nil {
+			w.log.Error("dead letter after max retries", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "err", err)
+		} else {
+			w.log.Info("job completed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
+		}
+	}
+}
+
+// retry executes fn up to maxRetries times with exponential backoff.
+func (w *Worker) retry(ctx context.Context, job Job, fn func(context.Context, Job) error) error {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if err := fn(ctx, job); err != nil {
 			if ctx.Err() != nil {
-				return // job stays in-flight, will be recovered on next startup
+				return ctx.Err()
 			}
-			w.log.Warn("job failed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "err", err)
+
+			lastErr = err
+			w.log.Warn("job failed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "attempt", attempt+1, "err", err)
 
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && !apiErr.IsRetryable() {
-				w.log.Error("non-retryable error, dead letter", "path", job.RelPath, "err", err)
-				// Force to dead letter by setting retries to max
-				job.Retries = maxRetries - 1
-				w.queue.Retry(job, err.Error(), maxRetries)
-				continue
+				return err
 			}
 
-			if !w.queue.Retry(job, err.Error(), maxRetries) {
-				w.log.Error("dead letter after max retries", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "err", err)
+			backoff := time.Duration(5<<uint(attempt)) * time.Second
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 			continue
 		}
-
-		w.queue.Complete(job.ID)
-		w.log.Info("job completed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
+		return nil
 	}
+	return lastErr
 }
 
 func (w *Worker) processUpsert(ctx context.Context, job Job) error {
@@ -105,6 +112,11 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 
 	if info.Size() == 0 {
 		w.log.Info("empty file, skipping ragflow upsert", "path", job.RelPath)
+		return nil
+	}
+
+	if SkipText(filepath.Ext(filePath), job.RelPath, info.Size()) {
+		w.log.Info("text filter: skipping upsert", "path", job.RelPath, "size", info.Size())
 		return nil
 	}
 
@@ -127,7 +139,6 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 	}
 	w.log.Debug("uploaded", "path", job.RelPath, "docID", docID)
 
-	// Parse failure → return error so the job retries (hash cache NOT updated)
 	if err := client.Parse(ctx, docID); err != nil {
 		return fmt.Errorf("parse after upload: %w", err)
 	}

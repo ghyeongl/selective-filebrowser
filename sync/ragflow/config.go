@@ -117,3 +117,39 @@ func (c *Config) IsEligible(relPath string) bool {
 	_, ok := c.Extensions[ext]
 	return ok
 }
+
+// skipText returns true if a plain-text file should be excluded from indexing.
+//
+// Rules:
+//   - .md/.mdx: only allowed under specific obsidian vault prefixes; skip if > 1 MB.
+//   - .txt/.csv: skip if > 1 MB.
+func SkipText(ext, relPath string, size int64) bool {
+	const maxTextSize = 1 << 20 // 1 MB
+	ext = strings.ToLower(ext)
+
+	switch ext {
+	case ".md", ".mdx":
+		allowed := false
+		for _, prefix := range mdAllowedPrefixes {
+			if strings.HasPrefix(relPath, prefix) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return true
+		}
+		return size > maxTextSize
+
+	case ".txt", ".csv":
+		return size > maxTextSize
+	}
+	return false
+}
+
+// mdAllowedPrefixes lists the Spaces-relative path prefixes where .md/.mdx
+// files are eligible for RAGFlow indexing.
+var mdAllowedPrefixes = []string{
+	"Docu/Environments/obsidian-personal/",
+	"Work/Docs/GPU창업/obsidian-x10lab/",
+}

@@ -36,18 +36,6 @@ CREATE TABLE IF NOT EXISTS meta (
 `
 
 const ragflowSchema = `
-CREATE TABLE IF NOT EXISTS ragflow_queue (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    rel_path   TEXT NOT NULL,
-    action     TEXT NOT NULL,
-    route_idx  INTEGER NOT NULL,
-    retries    INTEGER NOT NULL DEFAULT 0,
-    next_retry INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    error      TEXT,
-    dead       INTEGER NOT NULL DEFAULT 0
-);
-
 CREATE TABLE IF NOT EXISTS ragflow_hash_cache (
     rel_path    TEXT NOT NULL,
     route_idx   INTEGER NOT NULL,

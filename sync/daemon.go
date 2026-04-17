@@ -265,7 +265,7 @@ func (d *Daemon) ragflowCheck(relPath string) {
 	spacesPath := filepath.Join(d.spacesRoot, relPath)
 	if fi, err := os.Stat(spacesPath); err == nil {
 		ext := strings.ToLower(filepath.Ext(relPath))
-		if ragflowSkipText(ext, relPath, fi.Size()) {
+		if ragflow.SkipText(ext, relPath, fi.Size()) {
 			if d.ragflow.HasCacheEntry(relPath) {
 				d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 			}
@@ -275,42 +275,6 @@ func (d *Daemon) ragflowCheck(relPath string) {
 	} else if d.ragflow.HasCacheEntry(relPath) {
 		d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 	}
-}
-
-// ragflowSkipText decides whether a plain-text file should be excluded from
-// RAGFlow indexing.
-//
-// Rules:
-//   - .md/.mdx files are only indexed under the allowed obsidian vault prefixes.
-//   - .txt, .csv (and .md/.mdx in allowed paths) are skipped if > 1 MB.
-func ragflowSkipText(ext, relPath string, size int64) bool {
-	const maxTextSize = 1 << 20 // 1 MB
-
-	switch ext {
-	case ".md", ".mdx":
-		allowed := false
-		for _, prefix := range ragflowMDPrefixes {
-			if strings.HasPrefix(relPath, prefix) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return true
-		}
-		return size > maxTextSize
-
-	case ".txt", ".csv":
-		return size > maxTextSize
-	}
-	return false
-}
-
-// ragflowMDPrefixes lists the Spaces-relative path prefixes where .md/.mdx
-// files are eligible for RAGFlow indexing.
-var ragflowMDPrefixes = []string{
-	"Docu/Environments/obsidian-personal/",
-	"Work/Docs/GPU창업/obsidian-x10lab/",
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.
