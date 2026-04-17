@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
-
-const maxRetries = 3
 
 // Worker processes the RAGFlow job queue in a background goroutine.
 type Worker struct {
@@ -21,6 +21,15 @@ type Worker struct {
 	hashCache  *HashCache
 	spacesRoot string
 	log        *slog.Logger
+
+	retryMu   sync.Mutex
+	retryList []retryJob
+}
+
+type retryJob struct {
+	Job       Job
+	Attempts  int
+	NextRetry time.Time
 }
 
 // NewWorker creates a worker with one client per route.
@@ -44,61 +53,58 @@ func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("ragflow worker started", "routes", len(w.config.Routes))
 
 	for {
+		// 1. Try main queue (non-blocking)
+		if job, ok := w.queue.TryPop(); ok {
+			w.handle(ctx, job)
+			continue
+		}
+
+		// 2. Main queue empty — process ready retries
+		if w.processRetries(ctx) {
+			continue
+		}
+
+		// 3. Nothing to do — block on main queue
 		job, ok := w.queue.Pop(ctx)
 		if !ok {
 			w.log.Info("ragflow worker stopping")
 			return
 		}
-
-		w.log.Debug("processing job", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
-
-		var process func(context.Context, Job) error
-		switch job.Action {
-		case ActionUpsert:
-			process = w.processUpsert
-		case ActionDelete:
-			process = w.processDelete
-		default:
-			w.log.Error("unknown action", "action", job.Action, "path", job.RelPath)
-			continue
-		}
-
-		if err := w.retry(ctx, job, process); err != nil {
-			w.log.Error("dead letter after max retries", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "err", err)
-		} else {
-			w.log.Info("job completed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
-		}
+		w.handle(ctx, job)
 	}
 }
 
-// retry executes fn up to maxRetries times with exponential backoff.
-func (w *Worker) retry(ctx context.Context, job Job, fn func(context.Context, Job) error) error {
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if err := fn(ctx, job); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+func (w *Worker) handle(ctx context.Context, job Job) {
+	w.log.Debug("processing job", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
 
-			lastErr = err
-			w.log.Warn("job failed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "attempt", attempt+1, "err", err)
-
-			var apiErr *APIError
-			if errors.As(err, &apiErr) && !apiErr.IsRetryable() {
-				return err
-			}
-
-			backoff := time.Duration(5<<uint(attempt)) * time.Second
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			continue
-		}
-		return nil
+	var err error
+	switch job.Action {
+	case ActionUpsert:
+		err = w.processUpsert(ctx, job)
+	case ActionDelete:
+		err = w.processDelete(ctx, job)
+	default:
+		w.log.Error("unknown action", "action", job.Action, "path", job.RelPath)
+		return
 	}
-	return lastErr
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		w.log.Warn("job failed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx, "err", err)
+
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && !apiErr.IsRetryable() {
+			w.log.Error("non-retryable error", "path", job.RelPath, "err", err)
+			return
+		}
+
+		w.addRetry(job, 0)
+		return
+	}
+
+	w.log.Info("job completed", "path", job.RelPath, "action", job.Action, "route", job.RouteIdx)
 }
 
 func (w *Worker) processUpsert(ctx context.Context, job Job) error {
@@ -125,10 +131,17 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 		return err
 	}
 
+	// Same hash for this path — already indexed (doc_id="" means chunk-0 marker)
 	cachedHash, _, ok := w.hashCache.Get(job.RelPath, job.RouteIdx)
 	if ok && cachedHash == newHash {
 		w.log.Debug("hash unchanged, skipping", "path", job.RelPath)
 		return nil
+	}
+
+	// Same hash uploaded from a different path — reuse doc_id
+	if docID, found := w.hashCache.GetBySHA256(newHash, job.RouteIdx); found {
+		w.log.Debug("sha256 dedup, reusing doc", "path", job.RelPath, "docID", docID)
+		return w.hashCache.Set(job.RelPath, job.RouteIdx, newHash, docID)
 	}
 
 	client := w.clients[job.RouteIdx]
@@ -140,6 +153,17 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 	w.log.Debug("uploaded", "path", job.RelPath, "docID", docID)
 
 	if err := client.Parse(ctx, docID); err != nil {
+		// Cleanup uploaded document to prevent duplicates on retry
+		client.Delete(ctx, docID)
+
+		errMsg := err.Error()
+		// chunk 0 without [ERROR] → genuinely empty file, mark and don't retry
+		if strings.Contains(errMsg, "0 chunks") && !strings.Contains(errMsg, "[ERROR]") {
+			w.hashCache.Set(job.RelPath, job.RouteIdx, newHash, "")
+			w.log.Info("empty content, marked", "path", job.RelPath)
+			return nil
+		}
+
 		return fmt.Errorf("parse after upload: %w", err)
 	}
 
@@ -147,29 +171,105 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 }
 
 func (w *Worker) processDelete(ctx context.Context, job Job) error {
-	client := w.clients[job.RouteIdx]
-
 	_, docID, ok := w.hashCache.Get(job.RelPath, job.RouteIdx)
-	if !ok || docID == "" {
-		var err error
-		docID, err = client.FindByName(ctx, filepath.Base(job.RelPath))
-		if err != nil {
-			return err
-		}
-		if docID == "" {
-			w.log.Debug("document not found in RAGFlow, skipping delete", "path", job.RelPath)
-			w.hashCache.Delete(job.RelPath, job.RouteIdx)
-			return nil
-		}
+	if !ok {
+		return nil
 	}
 
+	// Remove this path's cache entry first
+	w.hashCache.Delete(job.RelPath, job.RouteIdx)
+
+	if docID == "" {
+		// chunk-0 marker — no document in RAGFlow to delete
+		return nil
+	}
+
+	// Only delete from RAGFlow if no other paths reference this doc
+	if w.hashCache.CountByDocID(docID, job.RouteIdx) > 0 {
+		w.log.Debug("doc still referenced by other paths, keeping", "docID", docID)
+		return nil
+	}
+
+	client := w.clients[job.RouteIdx]
 	if err := client.Delete(ctx, docID); err != nil {
 		return err
 	}
 
 	w.log.Debug("deleted from RAGFlow", "path", job.RelPath, "docID", docID)
-	return w.hashCache.Delete(job.RelPath, job.RouteIdx)
+	return nil
 }
+
+// --- retry logic ---
+
+func backoffFor(attempt int) time.Duration {
+	d := 5 * time.Second << uint(attempt)
+	if d > time.Hour {
+		return time.Hour
+	}
+	return d
+}
+
+func (w *Worker) addRetry(job Job, attempts int) {
+	attempts++
+	next := time.Now().Add(backoffFor(attempts))
+	w.retryMu.Lock()
+	w.retryList = append(w.retryList, retryJob{Job: job, Attempts: attempts, NextRetry: next})
+	w.retryMu.Unlock()
+	w.log.Info("scheduled retry", "path", job.RelPath, "attempt", attempts, "next", next.Format("15:04:05"))
+}
+
+// processRetries processes one ready retry job. Returns true if one was processed.
+func (w *Worker) processRetries(ctx context.Context) bool {
+	w.retryMu.Lock()
+	now := time.Now()
+	idx := -1
+	for i, r := range w.retryList {
+		if now.After(r.NextRetry) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		w.retryMu.Unlock()
+		return false
+	}
+	rj := w.retryList[idx]
+	w.retryList = append(w.retryList[:idx], w.retryList[idx+1:]...)
+	w.retryMu.Unlock()
+
+	w.log.Info("retrying job", "path", rj.Job.RelPath, "attempt", rj.Attempts)
+
+	var err error
+	switch rj.Job.Action {
+	case ActionUpsert:
+		err = w.processUpsert(ctx, rj.Job)
+	case ActionDelete:
+		err = w.processDelete(ctx, rj.Job)
+	default:
+		return true
+	}
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		w.log.Warn("retry failed", "path", rj.Job.RelPath, "attempt", rj.Attempts, "err", err)
+
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && !apiErr.IsRetryable() {
+			w.log.Error("non-retryable error on retry, giving up", "path", rj.Job.RelPath, "err", err)
+			return true
+		}
+
+		w.addRetry(rj.Job, rj.Attempts)
+		return true
+	}
+
+	w.log.Info("retry succeeded", "path", rj.Job.RelPath, "attempt", rj.Attempts)
+	return true
+}
+
+// --- public API ---
 
 // Enqueue adds a job for all matching routes.
 func (w *Worker) Enqueue(relPath string, action Action) {

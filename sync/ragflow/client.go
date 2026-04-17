@@ -41,9 +41,11 @@ type apiResp struct {
 
 // doc represents a document in RAGFlow.
 type doc struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"run"` // "UNSTART", "RUNNING", "CANCEL", "DONE", "FAIL"
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Status      string `json:"run"`          // "UNSTART", "RUNNING", "CANCEL", "DONE", "FAIL"
+	ChunkCount  int    `json:"chunk_count"`
+	ProgressMsg string `json:"progress_msg"`
 }
 
 // docListResp is the response for document list/search endpoints.
@@ -174,6 +176,7 @@ func (c *Client) Parse(ctx context.Context, docID string) error {
 	return c.waitForParse(ctx, docID)
 }
 
+// waitForParse polls until parse completes. Returns (chunkCount, error).
 func (c *Client) waitForParse(ctx context.Context, docID string) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -183,12 +186,18 @@ func (c *Client) waitForParse(ctx context.Context, docID string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			status, err := c.getDocStatus(ctx, docID)
+			info, err := c.getDocInfo(ctx, docID)
 			if err != nil {
 				return fmt.Errorf("poll parse status: %w", err)
 			}
-			switch status {
+			switch info.Status {
 			case "DONE":
+				if strings.Contains(info.ProgressMsg, "[ERROR]") {
+					return fmt.Errorf("parse error in progress_msg for doc %s: %s", docID, info.ProgressMsg)
+				}
+				if info.ChunkCount == 0 {
+					return fmt.Errorf("parse produced 0 chunks for doc %s", docID)
+				}
 				return nil
 			case "FAIL":
 				return fmt.Errorf("parse failed for doc %s", docID)
@@ -199,35 +208,36 @@ func (c *Client) waitForParse(ctx context.Context, docID string) error {
 	}
 }
 
-func (c *Client) getDocStatus(ctx context.Context, docID string) (string, error) {
+
+func (c *Client) getDocInfo(ctx context.Context, docID string) (doc, error) {
 	u := fmt.Sprintf("%s/api/v1/datasets/%s/documents?id=%s",
 		c.apiBase, c.datasetID, url.QueryEscape(docID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return doc{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return doc{}, err
 	}
 	defer resp.Body.Close()
 
 	var r apiResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
+		return doc{}, err
 	}
 
 	var list docListResp
 	if err := json.Unmarshal(r.Data, &list); err != nil {
-		return "", err
+		return doc{}, err
 	}
 	if len(list.Docs) == 0 {
-		return "", fmt.Errorf("document %s not found", docID)
+		return doc{}, fmt.Errorf("document %s not found", docID)
 	}
-	return list.Docs[0].Status, nil
+	return list.Docs[0], nil
 }
 
 // Delete removes a document from RAGFlow.

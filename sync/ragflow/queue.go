@@ -57,15 +57,22 @@ func (q *JobQueue) Enqueue(relPath string, action Action, routeIdx int) error {
 }
 
 // Pop returns the next job, blocking until available or ctx is cancelled.
+// seen entries are retained to prevent re-enqueue of the same job within this lifecycle.
 func (q *JobQueue) Pop(ctx context.Context) (Job, bool) {
 	select {
 	case job := <-q.ch:
-		key := dedupKey(job.RelPath, job.Action, job.RouteIdx)
-		q.mu.Lock()
-		delete(q.seen, key)
-		q.mu.Unlock()
 		return job, true
 	case <-ctx.Done():
+		return Job{}, false
+	}
+}
+
+// TryPop returns the next job without blocking. Returns false if queue is empty.
+func (q *JobQueue) TryPop() (Job, bool) {
+	select {
+	case job := <-q.ch:
+		return job, true
+	default:
 		return Job{}, false
 	}
 }

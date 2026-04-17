@@ -59,6 +59,25 @@ func (hc *HashCache) HasAny(relPath string) bool {
 	return n == 1
 }
 
+// GetBySHA256 returns the docID if any entry with the given SHA256 exists for the route.
+func (hc *HashCache) GetBySHA256(sha256Hash string, routeIdx int) (docID string, ok bool) {
+	err := hc.db.QueryRow(
+		`SELECT doc_id FROM ragflow_hash_cache WHERE sha256 = ? AND route_idx = ? AND doc_id != '' LIMIT 1`,
+		sha256Hash, routeIdx,
+	).Scan(&docID)
+	return docID, err == nil
+}
+
+// CountByDocID returns the number of cache entries referencing the given docID.
+func (hc *HashCache) CountByDocID(docID string, routeIdx int) int {
+	var n int
+	hc.db.QueryRow(
+		`SELECT COUNT(*) FROM ragflow_hash_cache WHERE doc_id = ? AND route_idx = ?`,
+		docID, routeIdx,
+	).Scan(&n)
+	return n
+}
+
 // SHA256File computes the SHA256 hash of a file, returning the hex string.
 func SHA256File(path string) (string, error) {
 	f, err := os.Open(path)
