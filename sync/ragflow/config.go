@@ -93,15 +93,22 @@ func ParseConfigFromEnv() (Config, error) {
 	}, nil
 }
 
-// MatchRoutes returns indices of all routes matching the given relative path.
+// MatchRoutes returns indices of routes matching the given relative path.
+// When a specific (non-empty) prefix matches, catch-all routes (empty prefix)
+// are excluded so that a file is only sent to the most relevant dataset.
 func (c *Config) MatchRoutes(relPath string) []int {
-	var indices []int
+	var specific, catchAll []int
 	for i, r := range c.Routes {
-		if r.PathPrefix == "" || relPath == r.PathPrefix || strings.HasPrefix(relPath, r.PathPrefix+"/") {
-			indices = append(indices, i)
+		if r.PathPrefix == "" {
+			catchAll = append(catchAll, i)
+		} else if relPath == r.PathPrefix || strings.HasPrefix(relPath, r.PathPrefix+"/") {
+			specific = append(specific, i)
 		}
 	}
-	return indices
+	if len(specific) > 0 {
+		return specific
+	}
+	return catchAll
 }
 
 // IsEligible returns true if the file extension is in the RAGFlow extension set.

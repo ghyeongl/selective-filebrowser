@@ -97,8 +97,14 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 	filePath := filepath.Join(w.spacesRoot, job.RelPath)
 
-	if _, err := os.Stat(filePath); err != nil {
+	info, err := os.Stat(filePath)
+	if err != nil {
 		w.log.Debug("file gone, skipping upsert", "path", job.RelPath)
+		return nil
+	}
+
+	if info.Size() == 0 {
+		w.log.Info("empty file, skipping ragflow upsert", "path", job.RelPath)
 		return nil
 	}
 
