@@ -206,6 +206,9 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 				}
 			}
 		}
+		// Guardrail G1 observation: a file Archives never had arrived from Spaces.
+		// Stable token — `docker logs selective-syncer | grep 'promoted from Spaces'`.
+		l.Info("promoted from Spaces", "path", relPath)
 		return nil
 	}
 
