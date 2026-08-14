@@ -122,3 +122,84 @@ func TestDaemon_IgnoredArtifactRowCleanedUpWhenGone(t *testing.T) {
 
 	assert.False(t, hasRootEntry(t, store, ".syncthing.stale.tmp"), "stale row should be deleted once absent from both disks")
 }
+
+// The upgrade case: a DB row written by the old build still exists while the
+// artifact is live in Spaces. reconcileChildren enqueues DB rows without the
+// ignore filter, so without the worker guard P0 would promote the artifact.
+func TestDaemon_LegacyRowWithLiveArtifactNotPromoted(t *testing.T) {
+	dir := t.TempDir()
+	archivesRoot := filepath.Join(dir, "Archives")
+	spacesRoot := filepath.Join(dir, "Spaces")
+	require.NoError(t, os.MkdirAll(archivesRoot, 0755))
+	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, ".syncthing.big.tmp"), []byte("partial"), 0644))
+
+	store := setupTestDB(t)
+	require.NoError(t, store.UpsertEntry(Entry{
+		Inode:    900001,
+		Name:     ".syncthing.big.tmp",
+		Type:     "blob",
+		Size:     ptr(int64(7)),
+		Mtime:    time.Now().UnixNano(),
+		Selected: true,
+	}))
+
+	runDaemonBriefly(t, NewDaemon(store, archivesRoot, spacesRoot, t.TempDir()))
+
+	_, err := os.Stat(filepath.Join(archivesRoot, ".syncthing.big.tmp"))
+	assert.True(t, os.IsNotExist(err), "legacy row must not resurrect the artifact in Archives")
+	assert.False(t, hasRootEntry(t, store, ".syncthing.big.tmp"), "legacy row should be forgotten")
+}
+
+// Same upgrade case for the trash subtree, which is what homepi1's DB actually
+// holds: rows for .trash and its children, with the files live in Spaces.
+func TestDaemon_LegacyTrashSubtreeNotPromoted(t *testing.T) {
+	dir := t.TempDir()
+	archivesRoot := filepath.Join(dir, "Archives")
+	spacesRoot := filepath.Join(dir, "Spaces")
+	require.NoError(t, os.MkdirAll(archivesRoot, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(spacesRoot, ".trash", "2026-08-14"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(spacesRoot, ".trash", "2026-08-14", "x.txt"), []byte("x"), 0644))
+
+	store := setupTestDB(t)
+	now := time.Now().UnixNano()
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 900011, Name: ".trash", Type: "dir", Mtime: now, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 900012, ParentIno: 900011, Name: "2026-08-14", Type: "dir", Mtime: now, Selected: true}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 900013, ParentIno: 900012, Name: "x.txt", Type: "text", Size: ptr(int64(1)), Mtime: now, Selected: true}))
+
+	runDaemonBriefly(t, NewDaemon(store, archivesRoot, spacesRoot, t.TempDir()))
+
+	_, err := os.Stat(filepath.Join(archivesRoot, ".trash"))
+	assert.True(t, os.IsNotExist(err), "trash subtree must not be promoted to Archives")
+	assert.False(t, hasRootEntry(t, store, ".trash"), "trash rows should be forgotten")
+
+	children, err := store.ListChildren(900011)
+	require.NoError(t, err)
+	assert.Empty(t, children, "descendant rows should be removed too")
+}
+
+// The .trash default is anchored to the sync root, so a user's own directory
+// named .trash deeper in the tree is still archived normally.
+func TestDaemon_NestedUserTrashIsNotIgnored(t *testing.T) {
+	dir := t.TempDir()
+	archivesRoot := filepath.Join(dir, "Archives")
+	spacesRoot := filepath.Join(dir, "Spaces")
+	require.NoError(t, os.MkdirAll(filepath.Join(archivesRoot, "project", ".trash"), 0755))
+	require.NoError(t, os.MkdirAll(spacesRoot, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(archivesRoot, "project", ".trash", "keep.txt"), []byte("keep"), 0644))
+
+	store := setupTestDB(t)
+	runDaemonBriefly(t, NewDaemon(store, archivesRoot, spacesRoot, t.TempDir()))
+
+	project, err := store.GetEntryByPath(0, "project")
+	require.NoError(t, err)
+	require.NotNil(t, project, "project/ should be registered")
+
+	trash, err := store.GetEntryByPath(project.Inode, ".trash")
+	require.NoError(t, err)
+	require.NotNil(t, trash, "project/.trash should be registered, not ignored")
+
+	keep, err := store.GetEntryByPath(trash.Inode, "keep.txt")
+	require.NoError(t, err)
+	assert.NotNil(t, keep, "project/.trash/keep.txt should be registered")
+}
