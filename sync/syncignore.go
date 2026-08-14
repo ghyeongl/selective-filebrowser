@@ -18,11 +18,30 @@ type ignorePattern struct {
 	dirOnly bool // trailing / in source line
 }
 
+// defaultIgnorePatterns are transfer-tool and app artifacts that must never be
+// promoted into Archives. They are always applied; the user's .syncignore adds
+// to this list and cannot remove entries from it.
+//
+// Deliberately narrow — only tool-generated artifacts. A blanket `*.tmp` is not
+// included: a user's own file may legitimately end in .tmp.
+var defaultIgnorePatterns = []string{
+	".syncthing.*.tmp",  // Syncthing in-flight transfer temp
+	"~syncthing~*.tmp",  // legacy Syncthing temp
+	".stfolder",         // Syncthing folder marker
+	".stversions",       // Syncthing version history
+	"*.sync-conflict-*", // Syncthing conflict copies
+	".trash",            // this app's SoftDelete destination (see fileops.go)
+}
+
 // LoadSyncIgnore reads a .syncignore file and returns a SyncIgnore.
-// If the file does not exist or cannot be read, returns an empty SyncIgnore
-// (nothing is ignored).
+// It always starts from the built-in defaultIgnorePatterns; the user file only
+// adds patterns and can neither replace nor disable the defaults. If the file
+// does not exist or cannot be read, the defaults still apply.
 func LoadSyncIgnore(path string) *SyncIgnore {
-	si := &SyncIgnore{}
+	si := &SyncIgnore{patterns: make([]ignorePattern, 0, len(defaultIgnorePatterns))}
+	for _, p := range defaultIgnorePatterns {
+		si.patterns = append(si.patterns, ignorePattern{pattern: p})
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
