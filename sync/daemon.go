@@ -110,9 +110,10 @@ func (d *Daemon) Run(ctx context.Context) {
 		// not ignore-filtered (it must still reap rows for vanished paths), so a
 		// row written by an older build would otherwise reach P0 and get its
 		// Spaces artifact promoted into Archives. Guarding here covers every
-		// queue source at once, and keeps artifacts out of the downstream sink.
+		// queue source at once, and keeps artifacts out of RAGFlow.
 		if d.isIgnored(path) {
 			d.forgetIgnored(path)
+			d.ragflowForget(path)
 			continue
 		}
 
@@ -314,6 +315,16 @@ func (d *Daemon) ragflowCheck(relPath string) {
 	} else if d.ragflow.HasCacheEntry(relPath) {
 		d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 	}
+}
+
+// ragflowForget removes an ignored path from RAGFlow. The worker guard skips
+// ragflowCheck, and the file usually still exists in Spaces, so a document
+// indexed before the path became ignored would otherwise linger remotely.
+func (d *Daemon) ragflowForget(relPath string) {
+	if d.ragflow == nil || !d.ragflow.HasCacheEntry(relPath) {
+		return
+	}
+	d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.
