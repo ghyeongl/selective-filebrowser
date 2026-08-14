@@ -112,7 +112,18 @@ func (d *Daemon) Run(ctx context.Context) {
 		// Spaces artifact promoted into Archives. Guarding here covers every
 		// queue source at once, and keeps artifacts out of RAGFlow.
 		if d.isIgnored(path) {
-			d.forgetIgnored(path)
+			if err := d.forgetIgnored(path); err != nil {
+				// Ignored paths are filtered out of both walks and the watcher,
+				// so nothing else would ever re-enqueue this row. Retry it the
+				// same way a failed pipeline run is retried.
+				l.Warn("forget ignored failed, requeueing", "path", path, "err", err)
+				select {
+				case <-time.After(5 * time.Second):
+				case <-done:
+				}
+				d.queue.Push(path)
+				continue
+			}
 			d.ragflowForget(path)
 			continue
 		}
@@ -193,29 +204,26 @@ func (d *Daemon) isIgnored(relPath string) bool {
 
 // forgetIgnored drops any DB rows left over for a now-ignored path. Disk files
 // are never touched: ignored means untracked, not deleted.
-func (d *Daemon) forgetIgnored(relPath string) {
+func (d *Daemon) forgetIgnored(relPath string) error {
 	l := sub("daemon")
 	entry, sv, err := lookupDB(d.store, d.archivesRoot, relPath)
-	if err != nil || entry == nil {
-		return
+	if err != nil {
+		return err
+	}
+	if entry == nil {
+		return nil
 	}
 
 	l.Info("forgetting ignored artifact", "path", relPath, "inode", entry.Inode)
 	if entry.Type == "dir" {
-		if err := d.store.DeleteEntryRecursive(entry.Inode); err != nil {
-			l.Warn("forget ignored failed", "path", relPath, "err", err)
-		}
-		return
+		return d.store.DeleteEntryRecursive(entry.Inode)
 	}
 	if sv != nil {
 		if err := d.store.DeleteSpacesView(sv.EntryIno); err != nil {
-			l.Warn("forget ignored failed", "path", relPath, "err", err)
-			return
+			return err
 		}
 	}
-	if err := d.store.DeleteEntry(entry.Inode); err != nil {
-		l.Warn("forget ignored failed", "path", relPath, "err", err)
-	}
+	return d.store.DeleteEntry(entry.Inode)
 }
 
 // rollbackState aligns DB observed state with current disk reality after a pipeline failure.
@@ -321,7 +329,15 @@ func (d *Daemon) ragflowCheck(relPath string) {
 // ragflowCheck, and the file usually still exists in Spaces, so a document
 // indexed before the path became ignored would otherwise linger remotely.
 func (d *Daemon) ragflowForget(relPath string) {
-	if d.ragflow == nil || !d.ragflow.HasCacheEntry(relPath) {
+	if d.ragflow == nil {
+		return
+	}
+	// Not gated on the hash cache alone: an upsert recovered from a previous
+	// run can still be in flight, or can have uploaded and then failed to
+	// parse, leaving a remote document with no cache entry. Eligibility is the
+	// wider gate — anything that could ever have been uploaded. processDelete
+	// falls back to a name lookup and no-ops when nothing is there.
+	if !d.ragflow.HasCacheEntry(relPath) && !d.ragflow.GetConfig().IsEligible(relPath) {
 		return
 	}
 	d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
