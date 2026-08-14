@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -61,4 +62,32 @@ func TestNormalSyncDoesNotLogPromotion(t *testing.T) {
 	assert.NotContains(t, buf.String(), "promoted from Spaces",
 		"normal propagation and deselect must stay quiet")
 	assert.False(t, strings.Contains(buf.String(), "promoted"), "no partial token either")
+}
+
+// Restoring a catalogued file that vanished from Archives is not accumulation.
+// It gets its own token so the KR grep does not count it.
+func TestArchivesRecoveryUsesADifferentToken(t *testing.T) {
+	env := setupPipelineEnv(t)
+	env.writeArchive(t, "kept.txt", []byte("v1"))
+	env.writeSpaces(t, "kept.txt", []byte("v1"))
+	env.run(t, "kept.txt")
+	require.NotNil(t, mustEntry(t, env, "kept.txt"), "precondition: catalogued in the DB")
+
+	// Archives loses the file; Spaces still has it.
+	require.NoError(t, os.Remove(env.archivesRoot+"/kept.txt"))
+
+	buf := captureInfoLog(t)
+	env.run(t, "kept.txt")
+
+	require.True(t, env.fileExists(env.archivesRoot+"/kept.txt"), "precondition: it really was restored")
+	out := buf.String()
+	assert.Contains(t, out, "restored to Archives from Spaces", "restores stay visible")
+	assert.NotContains(t, out, "promoted from Spaces", "a restore must not count toward the guardrail")
+}
+
+func mustEntry(t *testing.T, env *pipelineEnv, name string) *Entry {
+	t.Helper()
+	e, err := env.store.GetEntryByPath(0, name)
+	require.NoError(t, err)
+	return e
 }
