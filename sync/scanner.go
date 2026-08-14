@@ -35,8 +35,13 @@ func ScanDir(root string, ignore *SyncIgnore) (map[string]FileStat, error) {
 			return nil
 		}
 
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+
 		// Skip entries matching .syncignore patterns
-		if ignore.IsIgnored(d.Name(), d.IsDir()) {
+		if ignore.IsIgnored(relPath, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -62,11 +67,6 @@ func ScanDir(root string, ignore *SyncIgnore) (map[string]FileStat, error) {
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			return nil
-		}
-
-		relPath, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
 		}
 
 		result[relPath] = FileStat{

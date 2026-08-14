@@ -80,9 +80,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 				continue
 			}
 
-			// Skip entries matching .syncignore patterns
+			// Skip entries matching .syncignore patterns. The full relative path
+			// is matched, so anything under an ignored directory is skipped too.
 			base := filepath.Base(event.Name)
-			if w.ignore.IsIgnored(base, false) {
+			if w.ignore.IsIgnored(relPath, false) {
 				continue
 			}
 
@@ -167,7 +168,7 @@ func (w *Watcher) addRecursive(root string) error {
 			return nil // skip inaccessible dirs
 		}
 		if d.IsDir() {
-			if path != root && w.ignore.IsIgnored(d.Name(), true) {
+			if path != root && w.ignore.IsIgnored(w.toRelPath(path), true) {
 				return filepath.SkipDir
 			}
 			if err := w.watcher.Add(path); err != nil {
