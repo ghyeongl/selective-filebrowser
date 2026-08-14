@@ -110,7 +110,8 @@ func (d *Daemon) Run(ctx context.Context) {
 		// not ignore-filtered (it must still reap rows for vanished paths), so a
 		// row written by an older build would otherwise reach P0 and get its
 		// Spaces artifact promoted into Archives. Guarding here covers every
-		// queue source at once, and keeps artifacts out of RAGFlow.
+		// queue source at once, and keeps ignored paths out of ragflowCheck so
+		// they are never newly indexed.
 		if d.isIgnored(path) {
 			if err := d.forgetIgnored(path); err != nil {
 				// Ignored paths are filtered out of both walks and the watcher,
@@ -121,10 +122,12 @@ func (d *Daemon) Run(ctx context.Context) {
 				case <-time.After(5 * time.Second):
 				case <-done:
 				}
+				if ctx.Err() != nil {
+					l.Info("worker stopping, context cancelled")
+					break
+				}
 				d.queue.Push(path)
-				continue
 			}
-			d.ragflowForget(path)
 			continue
 		}
 
@@ -323,24 +326,6 @@ func (d *Daemon) ragflowCheck(relPath string) {
 	} else if d.ragflow.HasCacheEntry(relPath) {
 		d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 	}
-}
-
-// ragflowForget removes an ignored path from RAGFlow. The worker guard skips
-// ragflowCheck, and the file usually still exists in Spaces, so a document
-// indexed before the path became ignored would otherwise linger remotely.
-func (d *Daemon) ragflowForget(relPath string) {
-	if d.ragflow == nil {
-		return
-	}
-	// Not gated on the hash cache alone: an upsert recovered from a previous
-	// run can still be in flight, or can have uploaded and then failed to
-	// parse, leaving a remote document with no cache entry. Eligibility is the
-	// wider gate — anything that could ever have been uploaded. processDelete
-	// falls back to a name lookup and no-ops when nothing is there.
-	if !d.ragflow.HasCacheEntry(relPath) && !d.ragflow.GetConfig().IsEligible(relPath) {
-		return
-	}
-	d.ragflow.Enqueue(relPath, ragflow.ActionDelete)
 }
 
 // enqueueAll pushes all known paths to the eval queue for initial evaluation.
