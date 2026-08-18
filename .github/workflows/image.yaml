@@ -1,0 +1,90 @@
+name: Image
+
+# Build the deployment image off this repo's own runners. Never on
+# pull_request: no fork PR may reach the registry credentials.
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/ghyeongl/selective-syncer
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and push arm64 image
+    # Native arm64 — no QEMU. Free for public repos.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: "frontend/package.json"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+          cache: "pnpm"
+          cache-dependency-path: "frontend/pnpm-lock.yaml"
+
+      # frontend/dist holds only .gitkeep in git, and frontend/assets.go embeds
+      # dist/* at compile time. `//go:embed dist/*` is happy with just .gitkeep,
+      # so skipping this step yields a working binary with no UI.
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: Frontend assets exist
+        run: test -s frontend/dist/index.html
+
+      - name: Build image
+        run: |
+          docker build -f Dockerfile.s6 \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            --tag "$IMAGE:s6-arm64" \
+            --tag "$IMAGE:s6-arm64-${{ github.sha }}" \
+            .
+
+      # Verify before pushing, so a bad image never reaches the registry.
+      - name: Image answers which commit it came from
+        run: |
+          got=$(docker image inspect "$IMAGE:s6-arm64" \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+          test "$got" = "${{ github.sha }}"
+      - name: Image really carries the frontend
+        # The assets are embedded in the binary, not files in the image, so the
+        # only honest check is that the embed paths are in the binary itself.
+        # This is what catches a build that embedded an empty dist.
+        run: |
+          docker run --rm --entrypoint sh "$IMAGE:s6-arm64" \
+            -c 'grep -q "dist/index.html" /bin/filebrowser'
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The moving tag deploys; the sha tag is the name a rollback can point at.
+      - name: Push
+        run: |
+          docker push "$IMAGE:s6-arm64"
+          docker push "$IMAGE:s6-arm64-${{ github.sha }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image pushed"
+            echo
+            echo "- \`$IMAGE:s6-arm64\` (moving)"
+            echo "- \`$IMAGE:s6-arm64-${{ github.sha }}\` (rollback point)"
+          } >> "$GITHUB_STEP_SUMMARY"
