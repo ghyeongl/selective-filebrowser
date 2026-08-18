@@ -42,6 +42,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: "latest"
+          # This repo has never been linted; 29 findings predate CI running at
+          # all. Gate new code now, triage the backlog separately.
+          only-new-issues: true
 
   test:
     name: Test
