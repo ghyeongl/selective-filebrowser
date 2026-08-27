@@ -206,6 +206,16 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 				}
 			}
 		}
+		// Two different events share this branch. Only the first is guardrail-G1
+		// accumulation, so they get separate stable tokens — grepping
+		// 'promoted from Spaces' must not count legitimate restores.
+		if entry == nil {
+			// Archives never knew this path.
+			l.Info("promoted from Spaces", "path", relPath)
+		} else {
+			// Archives lost a file it had catalogued; Spaces put it back.
+			l.Info("restored to Archives from Spaces", "path", relPath)
+		}
 		return nil
 	}
 

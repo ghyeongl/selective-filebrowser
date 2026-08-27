@@ -107,6 +107,31 @@ func (d *Daemon) Run(ctx context.Context) {
 			break
 		}
 
+		// Ignored artifacts are never tracked. The DB walk in reconcileChildren is
+		// not ignore-filtered (it must still reap rows for vanished paths), so a
+		// row written by an older build would otherwise reach P0 and get its
+		// Spaces artifact promoted into Archives. Guarding here covers every
+		// queue source at once, and keeps ignored paths out of ragflowCheck so
+		// they are never newly indexed.
+		if d.isIgnored(path) {
+			if err := d.forgetIgnored(path); err != nil {
+				// Ignored paths are filtered out of both walks and the watcher,
+				// so nothing else would ever re-enqueue this row. Retry it the
+				// same way a failed pipeline run is retried.
+				l.Warn("forget ignored failed, requeueing", "path", path, "err", err)
+				select {
+				case <-time.After(5 * time.Second):
+				case <-done:
+				}
+				if ctx.Err() != nil {
+					l.Info("worker stopping, context cancelled")
+					break
+				}
+				d.queue.Push(path)
+			}
+			continue
+		}
+
 		hasQueued := func() bool {
 			return d.queue.Has(path)
 		}
@@ -169,6 +194,40 @@ func (d *Daemon) Run(ctx context.Context) {
 	watcher.Close()
 	l.Debug("watcher closed")
 	l.Info("sync daemon stopped")
+}
+
+// isIgnored reports whether a queued path matches the ignore rules. isDir is
+// taken from whichever disk still has the path; when neither does, the pipeline
+// resolves the leftover DB row on its own.
+func (d *Daemon) isIgnored(relPath string) bool {
+	_, aIsDir, _, _ := statFile(filepath.Join(d.archivesRoot, relPath))
+	_, sIsDir, _, _ := statFile(filepath.Join(d.spacesRoot, relPath))
+	isDir := (aIsDir != nil && *aIsDir) || (sIsDir != nil && *sIsDir)
+	return d.ignore.IsIgnored(relPath, isDir)
+}
+
+// forgetIgnored drops any DB rows left over for a now-ignored path. Disk files
+// are never touched: ignored means untracked, not deleted.
+func (d *Daemon) forgetIgnored(relPath string) error {
+	l := sub("daemon")
+	entry, sv, err := lookupDB(d.store, d.archivesRoot, relPath)
+	if err != nil {
+		return err
+	}
+	if entry == nil {
+		return nil
+	}
+
+	l.Info("forgetting ignored artifact", "path", relPath, "inode", entry.Inode)
+	if entry.Type == "dir" {
+		return d.store.DeleteEntryRecursive(entry.Inode)
+	}
+	if sv != nil {
+		if err := d.store.DeleteSpacesView(sv.EntryIno); err != nil {
+			return err
+		}
+	}
+	return d.store.DeleteEntry(entry.Inode)
 }
 
 // rollbackState aligns DB observed state with current disk reality after a pipeline failure.
@@ -317,17 +376,18 @@ func walkAndEnqueue(root string, queue *EvalQueue, ignore *SyncIgnore) int {
 			return nil
 		}
 
-		if ignore.IsIgnored(d.Name(), d.IsDir()) {
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+
+		if ignore.IsIgnored(rel, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return nil
-		}
 		queue.Push(rel)
 		count++
 		return nil
