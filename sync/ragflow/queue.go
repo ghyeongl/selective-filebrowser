@@ -29,9 +29,9 @@ type JobQueue struct {
 }
 
 // NewJobQueue creates a queue with the given buffer capacity.
-func NewJobQueue(cap int) *JobQueue {
+func NewJobQueue(capacity int) *JobQueue {
 	return &JobQueue{
-		ch:   make(chan Job, cap),
+		ch:   make(chan Job, capacity),
 		seen: make(map[string]struct{}),
 	}
 }

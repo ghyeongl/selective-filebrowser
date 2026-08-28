@@ -71,10 +71,15 @@ func (hc *HashCache) GetBySHA256(sha256Hash string, routeIdx int) (docID string,
 // CountByDocID returns the number of cache entries referencing the given docID.
 func (hc *HashCache) CountByDocID(docID string, routeIdx int) int {
 	var n int
-	hc.db.QueryRow(
+	// A failed count reads as zero, which callers treat as "no other path
+	// references this document" — the conservative direction is to report what
+	// we could actually see, not to guess.
+	if err := hc.db.QueryRow(
 		`SELECT COUNT(*) FROM ragflow_hash_cache WHERE doc_id = ? AND route_idx = ?`,
 		docID, routeIdx,
-	).Scan(&n)
+	).Scan(&n); err != nil {
+		return 0
+	}
 	return n
 }
 

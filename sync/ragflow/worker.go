@@ -153,13 +153,21 @@ func (w *Worker) processUpsert(ctx context.Context, job Job) error {
 	w.log.Debug("uploaded", "path", job.RelPath, "docID", docID)
 
 	if err := client.Parse(ctx, docID); err != nil {
-		// Cleanup uploaded document to prevent duplicates on retry
-		client.Delete(ctx, docID)
+		// Cleanup uploaded document to prevent duplicates on retry. A failed
+		// cleanup is not fatal — the parse error below is the real outcome —
+		// but it leaves an orphan, so it has to be visible.
+		if delErr := client.Delete(ctx, docID); delErr != nil {
+			w.log.Warn("cleanup after failed parse", "path", job.RelPath, "docID", docID, "err", delErr)
+		}
 
 		errMsg := err.Error()
 		// chunk 0 without [ERROR] → genuinely empty file, mark and don't retry
 		if strings.Contains(errMsg, "0 chunks") && !strings.Contains(errMsg, "[ERROR]") {
-			w.hashCache.Set(job.RelPath, job.RouteIdx, newHash, "")
+			// Deliberately not returned: a cache write failure here would retry
+			// an empty file forever. Log and let the next scan re-mark it.
+			if setErr := w.hashCache.Set(job.RelPath, job.RouteIdx, newHash, ""); setErr != nil {
+				w.log.Warn("mark empty content", "path", job.RelPath, "err", setErr)
+			}
 			w.log.Info("empty content, marked", "path", job.RelPath)
 			return nil
 		}
@@ -176,8 +184,12 @@ func (w *Worker) processDelete(ctx context.Context, job Job) error {
 		return nil
 	}
 
-	// Remove this path's cache entry first
-	w.hashCache.Delete(job.RelPath, job.RouteIdx)
+	// Remove this path's cache entry first. If that fails, stop: the count
+	// below decides whether to delete the remote document, and a stale entry
+	// would make it look still-referenced.
+	if err := w.hashCache.Delete(job.RelPath, job.RouteIdx); err != nil {
+		return fmt.Errorf("drop hash cache entry: %w", err)
+	}
 
 	if docID == "" {
 		// chunk-0 marker — no document in RAGFlow to delete
