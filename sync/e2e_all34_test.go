@@ -527,8 +527,14 @@ func TestE2E_Scenario25_Repairing_SDisk_NoSDb_Sel(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(env.archivesRoot, "rp25.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "spaces-newer", string(got), "#25: archives should have spaces content")
-	sv, _ := env.store.GetSpacesView(ino)
+	// The S→A copy renames a temp file into place, so the inode changes and the
+	// catalog follows it. Path is the stable key across a replacement.
+	e, err := env.store.GetEntryByPath(0, "rp25.txt")
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	sv, _ := env.store.GetSpacesView(e.Inode)
 	assert.NotNil(t, sv, "#25: spaces_view should be created")
+	_ = ino
 }
 
 func TestE2E_Scenario26_Repairing_SDisk_NoSDb_Sel_ADirty(t *testing.T) {

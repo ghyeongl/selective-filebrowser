@@ -418,8 +418,9 @@ func TestPipeline_Scenario23_ExternalSpacesAccept(t *testing.T) {
 	// State: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=0 → #23
 	env.run(t, "doc.txt")
 
-	// selected should be 1 (S_disk is authority)
-	entry, err := env.store.GetEntry(origInode)
+	// selected should be 1 (S_disk is authority). Look up by path: the S→A copy
+	// replaces the Archives file, so its inode changes and the row follows.
+	entry, err := env.store.GetEntryByPath(0, "doc.txt")
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 	assert.True(t, entry.Selected, "selected should be set to 1 (S_disk authority)")
@@ -430,9 +431,10 @@ func TestPipeline_Scenario23_ExternalSpacesAccept(t *testing.T) {
 	assert.Equal(t, []byte("spaces content"), got, "Archives should have Spaces content (spoke wins)")
 
 	// spaces_view should exist (P4 creates it)
-	sv, err := env.store.GetSpacesView(origInode)
+	sv, err := env.store.GetSpacesView(entry.Inode)
 	require.NoError(t, err)
 	assert.NotNil(t, sv, "spaces_view should be created by P4")
+	assert.NotEqual(t, origInode, entry.Inode, "S→A copy replaces the file, so the inode moves")
 }
 
 // #24: A_disk=1, A_db=1, S_disk=1, S_db=0, selected=0, A_dirty=1
@@ -531,12 +533,14 @@ func TestPipeline_DirectoryExternalAcceptReconcilesDescendants(t *testing.T) {
 	require.NotNil(t, docs)
 	assert.True(t, docs.Selected)
 
-	sub, err = env.store.GetEntry(sub.Inode)
+	// Re-resolve by path: an S→A copy on any of these replaces the file and
+	// moves the row to the new inode.
+	sub, err = env.store.GetEntryByPath(docs.Inode, "sub")
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	assert.True(t, sub.Selected)
 
-	note, err = env.store.GetEntry(note.Inode)
+	note, err = env.store.GetEntryByPath(sub.Inode, "note.txt")
 	require.NoError(t, err)
 	require.NotNil(t, note)
 	assert.True(t, note.Selected)

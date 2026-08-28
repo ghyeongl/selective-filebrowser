@@ -454,11 +454,9 @@ func p2Reconcile(ctx context.Context, store *Store, entry *Entry, relPath, archi
 	if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
 		return fmt.Errorf("reconcile S→A: %w", err)
 	}
-	newInfo, err := os.Stat(archivePath)
-	if err != nil {
-		return fmt.Errorf("stat archive after reconcile: %w", err)
-	}
-	return store.UpdateEntryMtime(entry.Inode, newInfo.ModTime().UnixNano(), ptrInt64(newInfo.Size()))
+	// SafeCopy renamed a temp file into place, so the inode changed; carry it
+	// across or the row points at a freed number that a later file can recycle.
+	return refreshEntryAfterArchiveCopy(store, entry, nil, archivePath)
 	// P4 creates spaces_view baseline
 }
 
@@ -473,12 +471,8 @@ func p2ExternalAccept(ctx context.Context, store *Store, entry *Entry, relPath, 
 		if err := SafeCopy(ctx, spacesPath, archivePath, hasQueued); err != nil {
 			return fmt.Errorf("copy S→A (spoke wins): %w", err)
 		}
-		aInfo, err := os.Stat(archivePath)
-		if err != nil {
-			return fmt.Errorf("stat archive after S→A: %w", err)
-		}
-		if err := store.UpdateEntryMtime(entry.Inode, aInfo.ModTime().UnixNano(), ptrInt64(aInfo.Size())); err != nil {
-			return fmt.Errorf("update entry mtime: %w", err)
+		if err := refreshEntryAfterArchiveCopy(store, entry, nil, archivePath); err != nil {
+			return fmt.Errorf("update entry after S→A: %w", err)
 		}
 	}
 
