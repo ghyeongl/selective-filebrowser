@@ -202,7 +202,7 @@ func TestRemoveFromSpaces_RemovesResidualEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 
-	require.NoError(t, RemoveFromSpaces(spacesPath, entry, store))
+	require.NoError(t, RemoveFromSpaces(spacesPath, filepath.Base(spacesPath), entry, store, LoadSyncIgnore("")))
 
 	_, err = os.Stat(spacesPath)
 	assert.True(t, os.IsNotExist(err))
@@ -250,4 +250,65 @@ func TestRenameConflict_Multiple(t *testing.T) {
 	path2, err := RenameConflict(filepath.Join(dir, "data.csv"))
 	require.NoError(t, err)
 	assert.Contains(t, path2, "conflict-2")
+}
+
+// Deselecting a directory must never delete ignored content. .git is the case
+// that matters: on a spoke it can be the only copy of a repository's history,
+// and Syncthing's (?d).git will propagate a deletion to every replica. Before
+// this guard, removeResidualEntries did an unconditional recursive os.Remove
+// of everything the catalog did not know about.
+func TestRemoveFromSpaces_KeepsIgnoredContent(t *testing.T) {
+	dir := t.TempDir()
+	ignoreFile := filepath.Join(dir, ".syncignore")
+	require.NoError(t, os.WriteFile(ignoreFile, []byte(".git\nnode_modules\n"), 0644))
+	ignore := LoadSyncIgnore(ignoreFile)
+
+	store := setupTestDB(t)
+	spaces := filepath.Join(dir, "Spaces")
+	repo := filepath.Join(spaces, "repo")
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".git", "objects"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "node_modules", "pkg"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: main"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "objects", "obj"), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "node_modules", "pkg", "index.js"), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main"), 0644))
+
+	// Only main.go is catalogued; .git and node_modules are ignored, so the
+	// daemon never registered them.
+	size := int64(12)
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, ParentIno: 0, Name: "repo", Type: "dir", Mtime: 1}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: 1, Name: "main.go", Type: "text", Size: &size, Mtime: 1}))
+
+	entry, err := store.GetEntry(1)
+	require.NoError(t, err)
+	require.NoError(t, RemoveFromSpaces(repo, "repo", entry, store, ignore))
+
+	assert.NoFileExists(t, filepath.Join(repo, "main.go"), "catalogued file should be removed")
+	assert.FileExists(t, filepath.Join(repo, ".git", "HEAD"), ".git must survive deselect")
+	assert.FileExists(t, filepath.Join(repo, ".git", "objects", "obj"), ".git contents must survive")
+	assert.FileExists(t, filepath.Join(repo, "node_modules", "pkg", "index.js"), "ignored dirs must survive")
+	assert.DirExists(t, repo, "the directory must remain while it holds ignored content")
+}
+
+// With nothing ignored inside, removal still fully cleans up.
+func TestRemoveFromSpaces_RemovesWhenNothingIgnored(t *testing.T) {
+	dir := t.TempDir()
+	ignore := LoadSyncIgnore(filepath.Join(dir, "absent-syncignore"))
+
+	store := setupTestDB(t)
+	spaces := filepath.Join(dir, "Spaces")
+	proj := filepath.Join(spaces, "proj")
+	require.NoError(t, os.MkdirAll(proj, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(proj, "a.txt"), []byte("a"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(proj, "stray.txt"), []byte("s"), 0644))
+
+	size := int64(1)
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 1, ParentIno: 0, Name: "proj", Type: "dir", Mtime: 1}))
+	require.NoError(t, store.UpsertEntry(Entry{Inode: 2, ParentIno: 1, Name: "a.txt", Type: "text", Size: &size, Mtime: 1}))
+
+	entry, err := store.GetEntry(1)
+	require.NoError(t, err)
+	require.NoError(t, RemoveFromSpaces(proj, "proj", entry, store, ignore))
+
+	assert.NoDirExists(t, proj, "directory with no ignored content should be removed")
 }

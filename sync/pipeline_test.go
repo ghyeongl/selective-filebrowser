@@ -53,7 +53,7 @@ func (env *pipelineEnv) run(t *testing.T, relPath string) {
 		spacesMtime, spacesIsDir, _, _ := statFile(filepath.Join(env.spacesRoot, path))
 		queueChildren := shouldQueueDescendants(entry, archiveIsDir, spacesIsDir, ComputeState(entry, sv, archiveMtime, spacesMtime))
 
-		err = RunPipeline(context.Background(), path, env.store, env.archivesRoot, env.spacesRoot, env.trashRoot, func() bool {
+		err = RunPipeline(context.Background(), path, env.store, env.archivesRoot, env.spacesRoot, env.trashRoot, LoadSyncIgnore(""), func() bool {
 			return q.Has(path)
 		})
 		require.NoError(t, err)
@@ -629,5 +629,53 @@ func TestSplitPath(t *testing.T) {
 			result := splitPath(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
+	}
+}
+
+// SafeCopy renames a temp file into place, so an S→A copy gives the Archives
+// file a new inode. If the catalog keeps the old one, the row points at a freed
+// inode; once the filesystem recycles that number, UpsertEntry's stale-inode
+// cleanup deletes the still-valid row and the entry disappears while its file
+// remains on disk. Observed in the e2e environment: small-2.txt present in
+// Archives with no entry, run after run.
+func TestPipeline_SToACopyKeepsEntryInodeInSync(t *testing.T) {
+	env := setupPipelineEnv(t)
+
+	env.writeArchive(t, "note.txt", []byte("v1"))
+	env.writeSpaces(t, "note.txt", []byte("v1"))
+	env.run(t, "note.txt")
+
+	entry, err := env.store.GetEntryByPath(0, "note.txt")
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	// Spaces edited underneath → P2 propagates S→A via SafeCopy.
+	time.Sleep(10 * time.Millisecond)
+	env.writeSpaces(t, "note.txt", []byte("edited on the spoke"))
+	env.run(t, "note.txt")
+
+	var diskInode uint64
+	info, err := os.Stat(filepath.Join(env.archivesRoot, "note.txt"))
+	require.NoError(t, err)
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		diskInode = st.Ino
+	}
+	require.NotZero(t, diskInode)
+
+	after, err := env.store.GetEntryByPath(0, "note.txt")
+	require.NoError(t, err)
+	require.NotNil(t, after, "the entry must still exist")
+	assert.Equal(t, diskInode, after.Inode,
+		"catalog inode must track the file after an S→A copy")
+
+	// A file that later reuses the old inode must not delete this row.
+	if entry.Inode != diskInode {
+		require.NoError(t, env.store.UpsertEntry(Entry{
+			Inode: entry.Inode, ParentIno: 0, Name: "recycled.txt",
+			Type: "text", Size: ptrInt64(3), Mtime: 1,
+		}))
+		still, err := env.store.GetEntryByPath(0, "note.txt")
+		require.NoError(t, err)
+		require.NotNil(t, still, "recycling the old inode must not delete note.txt")
 	}
 }

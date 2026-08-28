@@ -3,7 +3,7 @@ name: Continuous Integration
 on:
   push:
     branches:
-      - "master"
+      - "main"
     tags:
       - "v*"
   pull_request:
@@ -35,9 +35,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
+      # Dockerfile.s6 installs libheif-dev in its builder stage; the bare
+      # runners need it too or the cgo import in img/service.go fails.
+      - name: Install libheif
+        run: sudo apt-get update && sudo apt-get install -y libheif-dev
       - uses: golangci/golangci-lint-action@v9
         with:
           version: "latest"
+          # This repo has never been linted; 29 findings predate CI running at
+          # all. Gate new code now, triage the backlog separately.
+          only-new-issues: true
 
   test:
     name: Test
@@ -47,6 +54,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
+      # Dockerfile.s6 installs libheif-dev in its builder stage; the bare
+      # runners need it too or the cgo import in img/service.go fails.
+      - name: Install libheif
+        run: sudo apt-get update && sudo apt-get install -y libheif-dev
       - run: go test --race ./...
 
   build:
@@ -67,6 +78,10 @@ jobs:
           node-version: "24.x"
           cache: "pnpm"
           cache-dependency-path: "frontend/pnpm-lock.yaml"
+      # Dockerfile.s6 installs libheif-dev in its builder stage; the bare
+      # runners need it too or the cgo import in img/service.go fails.
+      - name: Install libheif
+        run: sudo apt-get update && sudo apt-get install -y libheif-dev
       - name: Install Task
         uses: go-task/setup-task@v1
       - run: task build

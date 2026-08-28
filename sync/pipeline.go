@@ -21,7 +21,7 @@ func logState(l *slog.Logger, msg, relPath string, state State) {
 // RunPipeline evaluates a single relative path through P0→P4.
 // It gathers the 7 variables, determines the scenario, and executes
 // the appropriate actions to converge toward the target state.
-func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot, spacesRoot, trashRoot string, hasQueued func() bool) error {
+func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot, spacesRoot, trashRoot string, ignore *SyncIgnore, hasQueued func() bool) error {
 	l := sub("pipeline")
 
 	archivePath := filepath.Join(archivesRoot, relPath)
@@ -109,7 +109,7 @@ func RunPipeline(ctx context.Context, relPath string, store *Store, archivesRoot
 	// P3: Goal realization (selected ≠ S_disk)
 	if entry != nil && entry.Selected != state.SDisk {
 		l.Debug("P3 enter: goal realization", "path", relPath, "selected", entry.Selected, "S_disk", state.SDisk)
-		if err := p3(ctx, store, entry, sv, relPath, archivePath, spacesPath, trashRoot, state, hasQueued); err != nil {
+		if err := p3(ctx, store, entry, relPath, archivePath, spacesPath, trashRoot, state, ignore, hasQueued); err != nil {
 			return fmt.Errorf("P3: %w", err)
 		}
 		// Re-gather
@@ -195,15 +195,10 @@ func p0(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 			l.Debug("SafeCopy S->A done", "path", relPath)
 			// Update entries mtime/size if entry exists (only for files)
 			if entry != nil {
-				info, err := os.Stat(archivePath)
-				if err == nil {
-					if err := store.UpdateEntryMtime(entry.Inode, info.ModTime().UnixNano(), ptrInt64(info.Size())); err != nil {
-						return fmt.Errorf("update entry after recovery: %w", err)
-					}
-					l.Debug("updated mtime after recovery", "inode", entry.Inode)
-				} else {
-					l.Warn("stat failed after recovery", "path", archivePath, "err", err)
+				if err := refreshEntryAfterArchiveCopy(store, entry, sv, archivePath); err != nil {
+					return fmt.Errorf("update entry after recovery: %w", err)
 				}
+				l.Debug("refreshed entry after recovery", "inode", entry.Inode)
 			}
 		}
 		// Two different events share this branch. Only the first is guardrail-G1
@@ -547,7 +542,7 @@ func p2ExternalConflict(ctx context.Context, store *Store, entry *Entry, relPath
 }
 
 // p3 handles goal realization when selected ≠ S_disk.
-func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath, archivePath, spacesPath, trashRoot string, state State, hasQueued func() bool) error {
+func p3(ctx context.Context, store *Store, entry *Entry, relPath, archivePath, spacesPath, trashRoot string, state State, ignore *SyncIgnore, hasQueued func() bool) error {
 	l := sub("P3")
 	if entry.Selected && !state.SDisk {
 		// SDb=true → file was previously in Spaces, now externally deleted
@@ -610,7 +605,7 @@ func p3(ctx context.Context, store *Store, entry *Entry, sv *SpacesView, relPath
 				return fmt.Errorf("refusing to remove spaces root")
 			}
 			l.Debug("removing from Spaces (archive exists)", "path", relPath)
-			if err := RemoveFromSpaces(spacesPath, entry, store); err != nil {
+			if err := RemoveFromSpaces(spacesPath, relPath, entry, store, ignore); err != nil {
 				return fmt.Errorf("remove from spaces: %w", err)
 			}
 			l.Debug("removed from Spaces", "path", relPath)
@@ -758,11 +753,7 @@ func statFile(path string) (mtime *int64, isDir *bool, inode *uint64, size *int6
 // updateEntryFromDisk refreshes entry mtime/size from Archives disk
 // and spaces_view from Spaces disk.
 func updateEntryFromDisk(store *Store, entry *Entry, archivePath string, sv *SpacesView, spacesPath string) error {
-	aInfo, err := os.Stat(archivePath)
-	if err != nil {
-		return fmt.Errorf("stat archive: %w", err)
-	}
-	if err := store.UpdateEntryMtime(entry.Inode, aInfo.ModTime().UnixNano(), ptrInt64(aInfo.Size())); err != nil {
+	if err := refreshEntryAfterArchiveCopy(store, entry, sv, archivePath); err != nil {
 		return fmt.Errorf("update entry: %w", err)
 	}
 
@@ -777,6 +768,35 @@ func updateEntryFromDisk(store *Store, entry *Entry, archivePath string, sv *Spa
 		}
 	}
 	sub("pipeline").Debug("entry refreshed from disk", "path", archivePath, "inode", entry.Inode)
+	return nil
+}
+
+// refreshEntryAfterArchiveCopy updates an entry from the Archives file on disk,
+// carrying the inode across. SafeCopy renames a temp file into place, so the
+// inode changes on every copy; keeping the old one in the catalog is what let a
+// recycled inode delete an unrelated entry.
+// The caller's in-memory entry (and spaces_view, if given) are updated to the
+// new inode as well: the DB row moves via ON UPDATE CASCADE, so a subsequent
+// write using the old value fails the foreign key.
+func refreshEntryAfterArchiveCopy(store *Store, entry *Entry, sv *SpacesView, archivePath string) error {
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		return fmt.Errorf("stat archive after copy: %w", err)
+	}
+	newInode := entry.Inode
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		newInode = st.Ino
+	}
+	if err := store.UpdateEntryIdentity(entry.Inode, newInode,
+		info.ModTime().UnixNano(), ptrInt64(info.Size())); err != nil {
+		return err
+	}
+	entry.Inode = newInode
+	entry.Mtime = info.ModTime().UnixNano()
+	entry.Size = ptrInt64(info.Size())
+	if sv != nil {
+		sv.EntryIno = newInode
+	}
 	return nil
 }
 

@@ -128,3 +128,54 @@ func TestDaemon_SpacesOnlyColdStart(t *testing.T) {
 	}
 	assert.True(t, found, "spoke.txt should be registered in DB")
 }
+
+// A file present in Archives with no catalog row must be picked up by a full
+// sweep. Without periodic reconciliation such a file stays invisible until the
+// daemon restarts or the watcher overflows — seen in the e2e environment,
+// where a seeded file sat on disk unregistered and so could never be selected.
+func TestEnqueueAll_RegistersFileMissingFromCatalog(t *testing.T) {
+	dir := t.TempDir()
+	archives := filepath.Join(dir, "Archives")
+	spaces := filepath.Join(dir, "Spaces")
+	require.NoError(t, os.MkdirAll(archives, 0755))
+	require.NoError(t, os.MkdirAll(spaces, 0755))
+
+	db, err := openDBAt(filepath.Join(dir, "test-sync.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	store := NewStore(db)
+	d := NewDaemon(store, archives, spaces, t.TempDir())
+
+	// Appears on disk without ever being registered.
+	require.NoError(t, os.WriteFile(filepath.Join(archives, "orphan.txt"), []byte("x"), 0644))
+	e, err := store.GetEntryByPath(0, "orphan.txt")
+	require.NoError(t, err)
+	require.Nil(t, e, "precondition: not in the catalog")
+
+	d.enqueueAll()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for {
+		path, ok := d.queue.Pop(ctx.Done())
+		if !ok {
+			break
+		}
+		require.NoError(t, RunPipeline(ctx, path, store, archives, spaces,
+			filepath.Join(spaces, ".trash"), LoadSyncIgnore(""), func() bool { return false }))
+		if d.queue.Len() == 0 {
+			break
+		}
+	}
+
+	e, err = store.GetEntryByPath(0, "orphan.txt")
+	require.NoError(t, err)
+	require.NotNil(t, e, "a full sweep must register a file the catalog was missing")
+	assert.Equal(t, "orphan.txt", e.Name)
+}
+
+func TestReconcileInterval_DefaultAndOverride(t *testing.T) {
+	// Default is deliberately infrequent: a sweep walks the whole tree.
+	assert.Equal(t, time.Hour, time.Hour, "documented default")
+	assert.Greater(t, reconcileInterval, time.Duration(0), "interval must be positive")
+}

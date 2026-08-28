@@ -3,6 +3,7 @@ package sync
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 )
 
 // Store provides CRUD operations on the sync database.
@@ -185,6 +186,13 @@ func (s *Store) SetSelected(inodes []uint64, selected bool) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	for _, ino := range inodes {
+		// 0 is the virtual-root sentinel used by parent_ino, never a real
+		// entry. Letting it through means setSelectedRecursive walks
+		// "WHERE parent_ino = 0", which matches every top-level entry, so a
+		// single {"inodes":[0]} would select or deselect the whole archive.
+		if ino == 0 {
+			continue
+		}
 		if _, err := tx.Exec("UPDATE entries SET selected = ? WHERE inode = ?", selected, ino); err != nil {
 			return fmt.Errorf("update selected: %w", err)
 		}
@@ -241,6 +249,26 @@ func (s *Store) SetSelectedSingle(inode uint64, selected bool) error {
 	_, err := s.db.Exec("UPDATE entries SET selected = ? WHERE inode = ?", selected, inode)
 	if err != nil {
 		return fmt.Errorf("set selected single: %w", err)
+	}
+	return nil
+}
+
+// UpdateEntryIdentity refreshes an entry after its Archives file was replaced
+// on disk, including the inode.
+//
+// SafeCopy finishes with an atomic rename, so every S→A copy gives the
+// destination a NEW inode. UpdateEntryMtime keys on the inode and cannot change
+// it, so the row was left pointing at an inode that no longer exists. Once the
+// filesystem recycled that number for some other file, UpsertEntry's
+// stale-inode cleanup saw "this inode lives at a different path now" and
+// deleted the still-valid row — the entry vanished from the catalog while its
+// file sat on disk. spaces_view follows via ON UPDATE CASCADE.
+func (s *Store) UpdateEntryIdentity(oldInode, newInode uint64, mtime int64, size *int64) error {
+	_, err := s.db.Exec(`
+		UPDATE entries SET inode = ?, mtime = ?, size = ? WHERE inode = ?
+	`, newInode, mtime, size, oldInode)
+	if err != nil {
+		return fmt.Errorf("update entry identity: %w", err)
 	}
 	return nil
 }
@@ -381,4 +409,125 @@ func (s *Store) StatusCounts() (archived, synced, syncing, removing int, err err
 		return 0, 0, 0, 0, fmt.Errorf("status counts: %w", err)
 	}
 	return archived, synced, syncing, removing, nil
+}
+
+// DupGroup is a set of sibling directories under one parent whose subtrees
+// have an identical (file count, total size) signature — the signal doc
+// docs/issues/rename-collision-duplicates.md validated by hand with `du -sb`.
+type DupGroup struct {
+	ParentPath string   `json:"parentPath"`
+	FileCount  int      `json:"fileCount"`
+	TotalSize  int64    `json:"totalSize"`
+	Names      []string `json:"names"`
+	Inodes     []uint64 `json:"inodes"`
+}
+
+type dupNode struct {
+	inode     uint64
+	parentIno uint64
+	name      string
+	isDir     bool
+	size      int64
+	// filled in bottom-up
+	fileCount int
+	totalSize int64
+}
+
+// DuplicateSiblings reports sibling directories that hold byte-identical
+// subtrees — the orphans left behind when a directory is renamed on Spaces
+// (the old path is deselected but retained in Archives, and the new path is
+// recovered S→A as a fresh tree).
+//
+// Report-only: it never mutates. Groups with fewer than minFiles files are
+// skipped, because empty and near-empty directories collide constantly and
+// name similarity alone yields false positives.
+//
+// ponytail: loads the whole entries table into memory (~150 MB at 1.5M rows).
+// Fine for an on-demand maintenance pass; make it a streaming bottom-up walk
+// if it ever needs to run on the hot path.
+func (s *Store) DuplicateSiblings(minFiles int) ([]DupGroup, error) {
+	rows, err := s.db.Query(`SELECT inode, parent_ino, name, type, COALESCE(size, 0) FROM entries`)
+	if err != nil {
+		return nil, fmt.Errorf("query entries for dup scan: %w", err)
+	}
+	defer rows.Close()
+
+	nodes := make(map[uint64]*dupNode)
+	children := make(map[uint64][]*dupNode)
+	for rows.Next() {
+		var n dupNode
+		var typ string
+		if err := rows.Scan(&n.inode, &n.parentIno, &n.name, &typ, &n.size); err != nil {
+			return nil, fmt.Errorf("scan entry for dup scan: %w", err)
+		}
+		n.isDir = typ == "dir"
+		nodes[n.inode] = &n
+		children[n.parentIno] = append(children[n.parentIno], &n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entries for dup scan: %w", err)
+	}
+
+	// Non-nil so the JSON response is [] rather than null — a caller doing
+	// groups.find(...) must not have to special-case an empty catalog.
+	groups := []DupGroup{}
+	// Recurse from the virtual root; children are aggregated before their parent
+	// so each directory's signature covers its whole subtree.
+	var visit func(parentIno uint64, parentPath string)
+	visit = func(parentIno uint64, parentPath string) {
+		kids := children[parentIno]
+		for _, k := range kids {
+			if !k.isDir {
+				k.fileCount = 1
+				k.totalSize = k.size
+				continue
+			}
+			childPath := k.name
+			if parentPath != "" {
+				childPath = parentPath + "/" + k.name
+			}
+			visit(k.inode, childPath)
+			for _, gk := range children[k.inode] {
+				k.fileCount += gk.fileCount
+				k.totalSize += gk.totalSize
+			}
+		}
+
+		// Group sibling directories by subtree signature.
+		bySig := make(map[[2]int64][]*dupNode)
+		for _, k := range kids {
+			if !k.isDir || k.fileCount < minFiles {
+				continue
+			}
+			sig := [2]int64{int64(k.fileCount), k.totalSize}
+			bySig[sig] = append(bySig[sig], k)
+		}
+		for sig, dupes := range bySig {
+			if len(dupes) < 2 {
+				continue
+			}
+			g := DupGroup{
+				ParentPath: parentPath,
+				FileCount:  int(sig[0]),
+				TotalSize:  sig[1],
+			}
+			// Sort the nodes, not the two slices separately — Names[i] must keep
+			// identifying Inodes[i], since a caller acting on the report deletes by inode.
+			sort.Slice(dupes, func(i, j int) bool { return dupes[i].name < dupes[j].name })
+			for _, d := range dupes {
+				g.Names = append(g.Names, d.name)
+				g.Inodes = append(g.Inodes, d.inode)
+			}
+			groups = append(groups, g)
+		}
+	}
+	visit(0, "")
+
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].TotalSize != groups[j].TotalSize {
+			return groups[i].TotalSize > groups[j].TotalSize
+		}
+		return groups[i].ParentPath < groups[j].ParentPath
+	})
+	return groups, nil
 }

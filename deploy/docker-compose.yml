@@ -1,0 +1,44 @@
+# Production deployment, owned by the repo and applied by the pi1 runner.
+#
+# Replaces the hand-maintained /home/pi/Devkits/packages/containers/selective-syncer
+# directory. State lives outside the workspace at SYNCER_DATA_ROOT so a runner
+# workspace wipe can never touch the database.
+#
+# No env_file: the legacy .env held only RAGFLOW_* keys, and RAGFlow is
+# deprecated. FB_PASSWORD comes through as a plain env var from a repo secret;
+# it is the quick-setup first-user password, consumed only when the database
+# does not yet exist, so it is inert on a normal deploy. It matters only if the
+# database is ever recreated — without it filebrowser would generate a random
+# admin password and only log it.
+#
+# State moved off pi1's root filesystem: it was 82% full with a 4.3 GB log
+# directory on it, while the protected disk has ~893 GB free.
+
+services:
+  selective-syncer:
+    image: ${SYNCER_IMAGE:-ghcr.io/ghyeongl/selective-syncer:s6-arm64}
+    container_name: selective-syncer
+    restart: unless-stopped
+    ports:
+      - "${SYNCER_PORT:-3010}:80"
+    volumes:
+      - ${SYNCER_DATA_ROOT}/config:/config
+      - ${SYNCER_DATA_ROOT}/database:/database
+      - ${SYNCER_DATA_ROOT}/log:/log
+      - ${SYNCER_ARCHIVE}:/archives
+      - ${SYNCER_SPACES}:/spaces
+    environment:
+      - PUID=1002
+      - PGID=1002
+      - UMASK=002
+      - TZ=Asia/Seoul
+      - FB_SYNC_LOG=/log/sync.log
+      - GOMAXPROCS=2
+      # Quick-setup first-user password; ignored once the database exists.
+      - FB_PASSWORD=${SYNCER_FB_PASSWORD:-}
+    logging:
+      # The legacy deployment accumulated 4.3 GB of logs with no bound.
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

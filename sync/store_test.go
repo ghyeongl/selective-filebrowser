@@ -1,8 +1,10 @@
 package sync
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -319,4 +321,143 @@ func TestChildCounts(t *testing.T) {
 	_, _, stable, err = store.ChildCounts(1)
 	require.NoError(t, err)
 	assert.Equal(t, 2, stable) // b.txt archived + a.txt synced
+}
+
+// mkDir/mkFile build a tree for the duplicate-sibling scan.
+func mkDir(t *testing.T, s *Store, ino, parent uint64, name string) {
+	t.Helper()
+	require.NoError(t, s.UpsertEntry(Entry{Inode: ino, ParentIno: parent, Name: name, Type: "dir", Mtime: 1}))
+}
+
+func mkFile(t *testing.T, s *Store, ino, parent uint64, name string, size int64) {
+	t.Helper()
+	require.NoError(t, s.UpsertEntry(Entry{Inode: ino, ParentIno: parent, Name: name, Type: "blob", Size: &size, Mtime: 1}))
+}
+
+func TestDuplicateSiblings(t *testing.T) {
+	s := setupTestDB(t)
+
+	// proj/
+	//   foo/      a(100) b(200)          <- renamed-from
+	//   bar/      a(100) b(200)          <- renamed-to, identical subtree
+	//   other/    a(100) b(999)          <- same count, different bytes
+	//   nested/sub/ x(50) y(50)          <- deeper, must aggregate through sub/
+	//   nested2/sub/ x(50) y(50)         <- identical to nested/
+	mkDir(t, s, 1, 0, "proj")
+	mkDir(t, s, 2, 1, "foo")
+	mkFile(t, s, 3, 2, "a", 100)
+	mkFile(t, s, 4, 2, "b", 200)
+	mkDir(t, s, 5, 1, "bar")
+	mkFile(t, s, 6, 5, "a", 100)
+	mkFile(t, s, 7, 5, "b", 200)
+	mkDir(t, s, 8, 1, "other")
+	mkFile(t, s, 9, 8, "a", 100)
+	mkFile(t, s, 10, 8, "b", 999)
+	mkDir(t, s, 11, 1, "nested")
+	mkDir(t, s, 12, 11, "sub")
+	mkFile(t, s, 13, 12, "x", 50)
+	mkFile(t, s, 14, 12, "y", 50)
+	mkDir(t, s, 15, 1, "nested2")
+	mkDir(t, s, 16, 15, "sub")
+	mkFile(t, s, 17, 16, "x", 50)
+	mkFile(t, s, 18, 16, "y", 50)
+
+	groups, err := s.DuplicateSiblings(1)
+	require.NoError(t, err)
+
+	got := map[string]DupGroup{}
+	for _, g := range groups {
+		got[g.ParentPath+"|"+strings.Join(g.Names, ",")] = g
+	}
+
+	// foo/bar collapse; "other" excluded on byte difference despite equal count.
+	fooBar, ok := got["proj|bar,foo"]
+	require.True(t, ok, "expected foo/bar duplicate group, got %+v", groups)
+	assert.Equal(t, 2, fooBar.FileCount)
+	assert.Equal(t, int64(300), fooBar.TotalSize)
+
+	// Aggregation must reach through the intermediate sub/ directory.
+	_, ok = got["proj|nested,nested2"]
+	assert.True(t, ok, "expected nested/nested2 duplicate group, got %+v", groups)
+
+	// The two sub/ dirs are NOT siblings, so they must not be reported together.
+	for _, g := range groups {
+		assert.NotEqual(t, []string{"sub", "sub"}, g.Names, "non-siblings must not group")
+	}
+}
+
+func TestDuplicateSiblings_SkipsBelowMinFiles(t *testing.T) {
+	s := setupTestDB(t)
+	// Two empty dirs are a trivial signature match and must not be reported.
+	mkDir(t, s, 1, 0, "proj")
+	mkDir(t, s, 2, 1, "empty1")
+	mkDir(t, s, 3, 1, "empty2")
+
+	groups, err := s.DuplicateSiblings(1)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+	// Must marshal as [] not null; the API contract and JS callers depend on it.
+	assert.NotNil(t, groups)
+	b, err := json.Marshal(groups)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", string(b))
+}
+
+// Names and Inodes are parallel slices; a caller trims by inode, so a sort
+// that reorders one without the other silently targets the wrong directory.
+func TestDuplicateSiblings_NamesAndInodesStayPaired(t *testing.T) {
+	s := setupTestDB(t)
+	mkDir(t, s, 1, 0, "proj")
+	// Insert in reverse name order so a name-only sort would reorder Names.
+	mkDir(t, s, 20, 1, "zzz")
+	mkFile(t, s, 21, 20, "f", 42)
+	mkDir(t, s, 10, 1, "aaa")
+	mkFile(t, s, 11, 10, "f", 42)
+
+	groups, err := s.DuplicateSiblings(1)
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+
+	g := groups[0]
+	require.Equal(t, []string{"aaa", "zzz"}, g.Names)
+	byName := map[string]uint64{"aaa": 10, "zzz": 20}
+	for i, name := range g.Names {
+		assert.Equal(t, byName[name], g.Inodes[i], "inode for %q must match its name", name)
+	}
+}
+
+// inode 0 is the virtual-root sentinel used by parent_ino, never a real entry.
+// SetSelected(0) previously fell through to setSelectedRecursive(tx, 0, …),
+// whose "WHERE parent_ino = 0" matches every top-level entry — so one API call
+// with {"inodes":[0]} selected the entire archive and started syncing all of it.
+func TestSetSelected_VirtualRootSelectsNothing(t *testing.T) {
+	s := setupTestDB(t)
+	mkDir(t, s, 1, 0, "top")
+	mkFile(t, s, 2, 1, "child.txt", 10)
+	mkFile(t, s, 3, 0, "root-file.txt", 10)
+
+	require.NoError(t, s.SetSelected([]uint64{0}, true))
+
+	for _, ino := range []uint64{1, 2, 3} {
+		e, err := s.GetEntry(ino)
+		require.NoError(t, err)
+		require.NotNil(t, e)
+		assert.False(t, e.Selected, "inode %d must not be selected by the virtual root", ino)
+	}
+}
+
+// The same sentinel must not deselect the world either.
+func TestSetSelected_VirtualRootDeselectsNothing(t *testing.T) {
+	s := setupTestDB(t)
+	mkDir(t, s, 1, 0, "top")
+	mkFile(t, s, 2, 1, "child.txt", 10)
+	require.NoError(t, s.SetSelected([]uint64{1}, true))
+
+	require.NoError(t, s.SetSelected([]uint64{0}, false))
+
+	for _, ino := range []uint64{1, 2} {
+		e, err := s.GetEntry(ino)
+		require.NoError(t, err)
+		assert.True(t, e.Selected, "inode %d must keep its selection", ino)
+	}
 }

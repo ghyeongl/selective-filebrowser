@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 )
@@ -159,8 +160,18 @@ func SafeCopy(ctx context.Context, src, dst string, hasQueued func() bool) error
 // RemoveFromSpaces removes a file or directory from Spaces and cleans up
 // spaces_view records. For directories, children are removed leaf-first
 // (recursive) before the directory itself.
-func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
+//
+// Ignored paths are never deleted. The syncer was told not to manage them, so
+// deleting them on deselect would destroy data it does not own — .git most of
+// all, which on a spoke may be the only copy of a repository's history. When
+// ignored content survives, the directory is deliberately left in place.
+// relPath is relative to the Spaces root, as SyncIgnore expects.
+func RemoveFromSpaces(spacesPath, relPath string, entry *Entry, store *Store, ignore *SyncIgnore) error {
 	l := sub("fileops")
+	if ignore.IsIgnored(relPath, entry.Type == "dir") {
+		l.Debug("refusing to remove ignored path", "path", relPath)
+		return nil
+	}
 	if entry.Type == "dir" {
 		children, err := store.ListChildren(entry.Inode)
 		if err != nil {
@@ -168,12 +179,19 @@ func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
 		}
 		for _, child := range children {
 			childPath := filepath.Join(spacesPath, child.Name)
-			if err := RemoveFromSpaces(childPath, &child, store); err != nil {
+			childRel := path.Join(relPath, child.Name)
+			if err := RemoveFromSpaces(childPath, childRel, &child, store, ignore); err != nil {
 				return err
 			}
 		}
-		if err := removeResidualEntries(spacesPath); err != nil {
+		kept, err := removeResidualEntries(spacesPath, relPath, ignore)
+		if err != nil {
 			return fmt.Errorf("remove residual entries: %w", err)
+		}
+		if kept {
+			// Ignored content remains, so the directory cannot and must not go.
+			l.Info("directory kept: it still holds ignored content", "path", relPath)
+			return store.DeleteSpacesView(entry.Inode)
 		}
 	}
 	if err := os.Remove(spacesPath); err != nil && !os.IsNotExist(err) {
@@ -185,28 +203,43 @@ func RemoveFromSpaces(spacesPath string, entry *Entry, store *Store) error {
 	return nil
 }
 
-func removeResidualEntries(dirPath string) error {
+// removeResidualEntries deletes on-disk leftovers the catalog does not know
+// about, so an emptied directory can actually be removed. It reports whether
+// anything was deliberately kept: ignored paths are skipped, and a directory
+// holding them cannot be removed either.
+func removeResidualEntries(dirPath, relPath string, ignore *SyncIgnore) (kept bool, err error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("read residual dir: %w", err)
+		return false, fmt.Errorf("read residual dir: %w", err)
 	}
 
 	for _, entry := range entries {
 		childPath := filepath.Join(dirPath, entry.Name())
+		childRel := path.Join(relPath, entry.Name())
+
+		if ignore.IsIgnored(childRel, entry.IsDir()) {
+			kept = true
+			continue
+		}
 		if entry.IsDir() {
-			if err := removeResidualEntries(childPath); err != nil {
-				return err
+			childKept, err := removeResidualEntries(childPath, childRel, ignore)
+			if err != nil {
+				return kept, err
+			}
+			if childKept {
+				kept = true
+				continue
 			}
 		}
 		if err := os.Remove(childPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove residual path: %w", err)
+			return kept, fmt.Errorf("remove residual path: %w", err)
 		}
 	}
 
-	return nil
+	return kept, nil
 }
 
 // SoftDelete moves a file to the trash directory (.trash/YYYY-MM-DD/).

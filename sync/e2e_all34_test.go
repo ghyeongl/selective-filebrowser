@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -227,7 +228,7 @@ func TestE2E_Scenario14_Recovering_SDb_Sel_SDirty(t *testing.T) {
 
 	// Remove Archives, modify Spaces
 	entries, _ := env.store.ListChildren(0)
-	ino := entries[0].Inode
+	oldIno := entries[0].Inode
 
 	os.Remove(filepath.Join(env.archivesRoot, "r14.txt"))
 	time.Sleep(10 * time.Millisecond)
@@ -238,9 +239,25 @@ func TestE2E_Scenario14_Recovering_SDb_Sel_SDirty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("spaces modified v2"), got, "#14: Archives recovered")
 
-	e, _ := env.store.GetEntry(ino)
+	// Recovery writes a new file (SafeCopy renames a temp into place), so the
+	// inode changes and the catalog follows it. Path is the stable identifier
+	// across a replacement; the inode is not. Keeping the old one in the row is
+	// what let a recycled inode delete an unrelated entry.
+	e, err := env.store.GetEntryByPath(0, "r14.txt")
+	require.NoError(t, err)
 	require.NotNil(t, e)
 	assert.True(t, e.Selected, "#14: should remain selected")
+
+	info, err := os.Stat(filepath.Join(env.archivesRoot, "r14.txt"))
+	require.NoError(t, err)
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		assert.Equal(t, st.Ino, e.Inode, "#14: catalog inode tracks the recovered file")
+		if st.Ino != oldIno {
+			stale, err := env.store.GetEntry(oldIno)
+			require.NoError(t, err)
+			assert.Nil(t, stale, "#14: the pre-recovery inode must not linger")
+		}
+	}
 }
 
 // ============================================================

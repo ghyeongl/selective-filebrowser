@@ -34,6 +34,15 @@ var defaultIgnorePatterns = []string{
 	"*.sync-tmp",        // this app's SafeCopy temp (see safeTmpPath)
 	".sync-tmp-*",       // ditto, hashed form for over-long names
 	"/.trash",           // this app's SoftDelete destination — root only
+
+	// Repository metadata. The design holds that Archives stores working-tree
+	// files only and .git lives on the primary machine, and Syncthing's
+	// .stignore already carries (?d).git. Leaving it out of the built-ins made
+	// that guarantee depend on an operator hand-editing .syncignore: without
+	// the entry, deselect deletes .git — which on a spoke can be the only copy
+	// of a repository's history. Matches a .git directory and a submodule's
+	// .git file alike.
+	".git",
 }
 
 // LoadSyncIgnore reads a .syncignore file and returns a SyncIgnore.

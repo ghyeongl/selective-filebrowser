@@ -1461,7 +1461,7 @@ func TestE2E_CapacityWarningData(t *testing.T) {
 	stats := env.getStats()
 	assert.Greater(t, stats.SpacesSize, int64(0))
 	assert.Greater(t, stats.DiskTotal, int64(0))
-	assert.Greater(t, stats.SpacesFree, int64(0))
+	assert.Greater(t, stats.DiskFree, int64(0))
 
 	// Frontend can compare selectedSize vs spacesFree
 	// This is a sanity check, not an exact assertion

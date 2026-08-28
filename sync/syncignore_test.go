@@ -84,3 +84,21 @@ func TestSyncIgnore_NilIgnoresNothing(t *testing.T) {
 	var si *SyncIgnore
 	assert.False(t, si.IsIgnored(".syncthing.big.tmp", false))
 }
+
+// .git must be ignored out of the box. The design says Archives holds
+// working-tree files only and .git lives on the primary machine; before this,
+// that guarantee depended on an operator adding .git to .syncignore by hand,
+// so a fresh deployment would delete repository history on deselect.
+func TestSyncIgnore_GitIsIgnoredByDefault(t *testing.T) {
+	// No user file at all — built-in defaults only.
+	si := LoadSyncIgnore("/nonexistent/.syncignore")
+
+	assert.True(t, si.IsIgnored(".git", true), "top-level .git directory")
+	assert.True(t, si.IsIgnored("repo/.git", true), "nested .git directory")
+	assert.True(t, si.IsIgnored("repo/.git/HEAD", false), "contents beneath .git")
+	assert.True(t, si.IsIgnored("repo/sub/.git", false), "submodule .git file")
+
+	// Things that merely start with .git are not repository metadata.
+	assert.False(t, si.IsIgnored("repo/.gitignore", false), ".gitignore is a tracked file")
+	assert.False(t, si.IsIgnored("repo/.gitattributes", false), ".gitattributes is a tracked file")
+}

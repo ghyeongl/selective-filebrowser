@@ -201,6 +201,18 @@ func (h *Handlers) HandleGetEntry(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entry) //nolint:errcheck
 }
 
+// containsVirtualRoot reports whether the request names inode 0. That is the
+// parent_ino sentinel for the virtual root, not a real entry; the store
+// ignores it, and callers are told rather than left thinking it applied.
+func containsVirtualRoot(inodes []uint64) bool {
+	for _, ino := range inodes {
+		if ino == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // SelectRequest is the request body for select/deselect.
 type SelectRequest struct {
 	Inodes []uint64 `json:"inodes"`
@@ -217,6 +229,11 @@ func (h *Handlers) HandleSelect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	l.Info("HTTP select", "inodes", req.Inodes, "count", len(req.Inodes))
+
+	if containsVirtualRoot(req.Inodes) {
+		http.Error(w, "inode 0 is the virtual root, not a selectable entry", http.StatusBadRequest)
+		return
+	}
 
 	if err := h.store.SetSelected(req.Inodes, true); err != nil {
 		l.Error("select failed", "err", err)
@@ -243,6 +260,11 @@ func (h *Handlers) HandleDeselect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	l.Info("HTTP deselect", "inodes", req.Inodes, "count", len(req.Inodes))
+
+	if containsVirtualRoot(req.Inodes) {
+		http.Error(w, "inode 0 is the virtual root, not a selectable entry", http.StatusBadRequest)
+		return
+	}
 
 	if err := h.store.SetSelected(req.Inodes, false); err != nil {
 		l.Error("deselect failed", "err", err)
@@ -460,4 +482,54 @@ func (h *Handlers) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// HandleDuplicates handles GET /api/sync/duplicates?min_files=<n>
+//
+// Reports sibling directories whose subtrees have an identical
+// (file count, total size) signature — the orphan copies a directory rename
+// on Spaces leaves behind in Archives. Report-only; it never mutates.
+//
+// Read the output with judgment, in both directions:
+//
+//   - False positives: legitimate peer directories (experiment runs, numbered
+//     exports) can share a signature without being duplicates.
+//   - False "identical": the signature is derived from the catalog, not from
+//     Archives disk, and the two can diverge. Observed on
+//     Learn/25_Fall/{창업실습,창업실습1}: disk holds 84 files/173.1 MB vs
+//     79/170.6 MB, but entries holds 79/170.6 MB for both, so a genuinely
+//     diverged pair reports as identical. Always confirm with `du -sb` on
+//     Archives before deleting anything.
+func (h *Handlers) HandleDuplicates(w http.ResponseWriter, r *http.Request) {
+	l := sub("handlers")
+
+	minFiles := 5
+	if v := r.URL.Query().Get("min_files"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			http.Error(w, "min_files must be a positive integer", http.StatusBadRequest)
+			return
+		}
+		minFiles = n
+	}
+
+	groups, err := h.store.DuplicateSiblings(minFiles)
+	if err != nil {
+		l.Error("duplicate scan failed", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Bytes recoverable by keeping one copy per group.
+	var reclaimable int64
+	for _, g := range groups {
+		reclaimable += g.TotalSize * int64(len(g.Names)-1)
+	}
+	l.Info("duplicate scan complete", "groups", len(groups), "reclaimable", reclaimable)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+		"groups":      groups,
+		"reclaimable": reclaimable,
+	})
 }

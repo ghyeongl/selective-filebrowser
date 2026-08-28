@@ -1,0 +1,410 @@
+name: Build → E2E → Deploy
+
+# Three phases. The unit under test is the CONTAINER, not the source tree:
+# phase 2 exercises the exact image phase 3 deploys.
+#
+#   0. frontend (hosted arm64)  static assets, shipped on as an artifact
+#   1. build    (pi3)  docker image, native arm64, no QEMU   — every commit
+#   2. e2e      (pi3)  Playwright against the container      — every commit
+#   3. deploy   (pi1)  production                            — main only
+#
+# Phase 2 leaves its container RUNNING as `selective-syncer-staging` on
+# STAGING_PORT. pi3 is therefore a continuous test environment always holding
+# the newest commit, reachable for hands-on poking between runs; each commit
+# replaces the previous instance. It is left up even when e2e fails, because
+# a failed build is exactly when you want to inspect it.
+#
+# Phases 1 and 2 share pi3's docker daemon, so the image passes between them
+# by tag with no registry round-trip. The push happens only after e2e is green.
+#
+# On pi3 every tool runs in a container, because neither pi has a Go toolchain
+# installed and the host must stay clean. The frontend is the exception: it is
+# built on a hosted arm64 runner and shipped to pi3 as an artifact, because
+# vite needs ~2 GB and pi3 has 1.6 GB plus an SD-card swapfile.
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: "Run build + e2e but stop before deploying"
+        type: boolean
+        default: false
+
+concurrency:
+  # One group: pi3 is a single runner, so runs must serialise on it regardless
+  # of branch. Superseded branch runs are cancelled — iterating on a branch
+  # otherwise queues each push behind a run that is already known stale, and
+  # every stacked run costs ~20 minutes of Pi time. A main run is never
+  # cancelled: it carries the deploy, and interrupting that mid-migration
+  # would leave production half-switched.
+  group: selfhosted-deploy
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/ghyeongl/selective-syncer
+  TAG: s6-arm64
+  CGO_DEPS: gcc musl-dev sqlite-dev libheif-dev
+  # Long-lived staging instance on pi3.
+  STAGING_NAME: selective-syncer-staging
+  STAGING_PORT: "3010"
+  # Path-identical to pi1's compose, so staging and production differ only in
+  # content. pi1 mounts these raw paths, not the ~/Drives symlinks.
+  PROD_ARCHIVE: /srv/dev-disk-by-uuid-9241a63c-fa85-40af-aaee-802402dcd4f3/protected/Archive
+  PROD_SPACES: /srv/dev-disk-by-uuid-9241a63c-fa85-40af-aaee-802402dcd4f3/protected/Spaces
+
+jobs:
+  # The frontend build does not belong on pi3. Measured there: node peaked at
+  # 1207 MB RSS, system memory hit 1503/1672 MB, and the 4 GB SD-card swapfile
+  # went to 100% — the edge of the OOM killer, ~20 min per run, and sustained
+  # multi-GB writes to an SD card. The output is static assets, so the arch
+  # only needs to match for consistency, not correctness.
+  frontend:
+    name: Frontend (hosted arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: "frontend/package.json"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+          cache: "pnpm"
+          cache-dependency-path: "frontend/pnpm-lock.yaml"
+
+      - name: Lint + build
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run lint
+          pnpm run build
+
+      # frontend/dist holds only .gitkeep in git and assets.go does
+      # //go:embed dist/* — which .gitkeep alone satisfies. An empty dist
+      # yields a working binary with no UI and fails nothing, so assert here
+      # as well as against the built image.
+      - name: dist is real
+        run: test -s frontend/dist/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  build:
+    name: Build image (pi3)
+    needs: frontend
+    runs-on: [self-hosted, ARM64, pi3]
+    outputs:
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: meta
+        run: echo "sha_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      # Cancelling a job kills the step process but NOT the container it
+      # started, so a cancelled run leaves a tooling container holding pi3's
+      # CPU and blocking every queued run behind it. Observed three times.
+      # Reap stragglers before starting; never touch the staging instance.
+      - name: Reap orphaned tooling containers
+        run: |
+          for img in golang:1.25rc2-alpine node:24-alpine golangci/golangci-lint:latest-alpine mcr.microsoft.com/playwright:v1.58.2-noble; do
+            ids=$(docker ps -q --filter "ancestor=$img")
+            [ -n "$ids" ] && echo "killing orphan from $img" && docker kill $ids || true
+          done
+          docker ps --format '{{.Names}} {{.Image}}'
+
+      # Dockerfile.s6 compiles the binary with //go:embed dist/*, so the built
+      # assets must be in place before docker build.
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: dist arrived
+        run: test -s frontend/dist/index.html
+
+      # Static gates first — they fail in seconds and save a long image build.
+      - name: Lint + vet + unit tests
+        run: |
+          docker run --rm \
+            -v "$PWD":/src -v ci-gomod:/go/pkg/mod -v ci-gocache:/root/.cache/go-build \
+            -w /src golang:1.25rc2-alpine sh -c "
+              apk add --no-cache $CGO_DEPS >/dev/null &&
+              go build ./... &&
+              go vet ./... &&
+              go vet -tags e2e ./sync/ &&
+              go test -p 1 ./sync/...
+            "
+
+      - name: Build image
+        run: |
+          docker build -f Dockerfile.s6 \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t "$IMAGE:${{ steps.meta.outputs.sha_tag }}" \
+            -t "$IMAGE:$TAG" .
+
+      - name: Image reports the commit it came from
+        run: |
+          got=$(docker image inspect "$IMAGE:${{ steps.meta.outputs.sha_tag }}" \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+          test "$got" = "${{ github.sha }}"
+
+      # frontend/dist holds only .gitkeep in git and frontend/assets.go does
+      # //go:embed dist/* — which .gitkeep alone satisfies. A build that skipped
+      # the frontend step yields a working binary with no UI and fails nothing.
+      # The assets live inside the binary, so this is the only honest check.
+      - name: Image really carries the frontend
+        run: |
+          docker run --rm --entrypoint sh "$IMAGE:${{ steps.meta.outputs.sha_tag }}" \
+            -c 'grep -q "dist/index.html" /bin/filebrowser'
+
+  e2e:
+    name: E2E against container (pi3)
+    needs: build
+    runs-on: [self-hosted, ARM64, pi3]
+    env:
+      SHA_TAG: ${{ needs.build.outputs.sha_tag }}
+      TEST_DIR: /home/pi/Devkits/staging/selective-syncer
+    steps:
+      - uses: actions/checkout@v6
+
+      # The e2e harness and fixtures live in the parent repo (public, so the
+      # default token is enough).
+      - uses: actions/checkout@v6
+        with:
+          repository: ghyeongl/selective-sync
+          path: parent
+
+      # The previous run's staging container must be gone before seeding. It is
+      # a live daemon holding last run's catalog: if it is still up while the
+      # fixtures are recreated, it sees them appear, finds selected=1 rows for
+      # those paths and copies them straight into Spaces. The next container
+      # then starts on a clean database, finds Spaces already populated, and
+      # registers everything as synced — which is why "entries registered by
+      # seed" asserted archived and got synced even after the DB was wiped.
+      - name: Stop the previous staging instance before seeding
+        run: |
+          docker ps -q --filter ancestor=mcr.microsoft.com/playwright:v1.58.2-noble \
+            | xargs -r docker kill 2>/dev/null || true
+          docker rm -f "$STAGING_NAME" 2>/dev/null || true
+          for i in $(seq 1 12); do
+            [ -z "$(docker ps -aq --filter name="^${STAGING_NAME}$")" ] && break
+            sleep 5
+          done
+          docker ps -a --filter name="^${STAGING_NAME}$" --format '{{.Names}} {{.Status}}'
+
+      - name: Seed the pre-configured environment
+        run: |
+          # setup-and-run.sh seeds the fixture tree then execs its argument;
+          # `true` makes it seed-only instead of launching a raw binary. It
+          # clears only the two target trees, never TEST_DIR itself.
+          E2E_ARCHIVES_DIR="$PROD_ARCHIVE" E2E_SPACES_DIR="$PROD_SPACES" \
+            TEST_DIR="$TEST_DIR" bash parent/e2e/setup-and-run.sh true
+
+          # The catalog must start empty. The fixtures are recreated every run
+          # and get fresh inodes, so a surviving database carries rows keyed to
+          # inodes that no longer exist, plus selections from earlier runs —
+          # which is why "giant-file.dat exists in Archives" asserted archived
+          # and got synced. State from a previous run is not a starting point.
+          rm -rf "$TEST_DIR"/config "$TEST_DIR"/database "$TEST_DIR"/log
+          mkdir -p "$TEST_DIR"/{config,database,log}
+
+      - name: Start the container under test (becomes the staging instance)
+        run: |
+          # Fresh /database makes filebrowser run quick setup; FB_NOAUTH picks
+          # the noauth auther, which is what the Playwright suite assumes.
+          #
+          # PUID/PGID deliberately differ from production here. pi1 runs as
+          # access2 (1002:1002) because that owns the real Archive/Spaces; on
+          # pi3 the runner seeds the fixtures as pi (1000:1000), so a container
+          # running as 1002 could not write to its own test data. Matching pi1
+          # instead would mean recreating access2 on pi3 and adding pi to gid
+          # 1002 — and a supplementary group change does not reach the
+          # already-running runner process without restarting the service.
+          docker run -d --name "$STAGING_NAME" \
+            --restart unless-stopped \
+            --label commit="$GITHUB_SHA" \
+            -p ${STAGING_PORT}:80 \
+            -e PUID=$(id -u) -e PGID=$(id -g) -e UMASK=002 -e TZ=Asia/Seoul \
+            -e FB_SYNC_LOG=/log/sync.log \
+            -e GOMAXPROCS=2 \
+            -e FB_NOAUTH=true \
+            -v "$PROD_ARCHIVE":/archives \
+            -v "$PROD_SPACES":/spaces \
+            -v "$TEST_DIR/config":/config \
+            -v "$TEST_DIR/database":/database \
+            -v "$TEST_DIR/log":/log \
+            "$IMAGE:$SHA_TAG"
+
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$STAGING_NAME" 2>/dev/null)" = healthy ] \
+              && echo "container healthy" && exit 0
+            sleep 5
+          done
+          echo "::error::container under test never became healthy"
+          docker logs "$STAGING_NAME" --tail 200
+          exit 1
+
+      - name: Playwright suite
+        run: |
+          # Same root-ownership trap as the node container: npm install writes
+          # node_modules through the bind mount, and as root those files land
+          # in the runner's own workspace where git clean cannot remove them.
+          docker run --rm --network host \
+            -v "$PWD/parent/e2e":/e2e -w /e2e \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
+            -v "$PROD_ARCHIVE":"$PROD_ARCHIVE" \
+            -v "$PROD_SPACES":"$PROD_SPACES" \
+            -e E2E_BASE_URL="http://127.0.0.1:${STAGING_PORT}" \
+            -e TEST_DIR="$TEST_DIR" \
+            -e E2E_ARCHIVES_DIR="$PROD_ARCHIVE" \
+            -e E2E_SPACES_DIR="$PROD_SPACES" \
+            mcr.microsoft.com/playwright:v1.58.2-noble sh -c '
+              npm ci --no-audit --no-fund
+              npx playwright test
+            '
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs "$STAGING_NAME" --tail 300
+
+      # Deliberately NOT torn down: this container is the continuous test
+      # environment. It stays up until the next commit replaces it.
+      - name: Staging instance left running
+        if: always()
+        run: |
+          echo "staging: http://$(hostname -I | awk '{print $1}'):${STAGING_PORT} @ ${GITHUB_SHA::12}"
+          docker ps --filter "name=$STAGING_NAME" --format '{{.Names}} {{.Status}} {{.Image}}'
+
+      # Only a container that passed e2e is allowed to travel to pi1.
+      # pi1 runs a separate docker daemon and pi3 has no SSH to it, so the image
+      # moves as an artifact. Swap this for a ghcr push once the
+      # ghcr.io/ghyeongl/selective-syncer package is linked to this repo — until
+      # then GITHUB_TOKEN has no write access to it.
+      - name: Export image for deploy
+        if: success() && github.ref == 'refs/heads/main' 
+        run: |
+          docker save "$IMAGE:$SHA_TAG" | gzip -1 > "$RUNNER_TEMP/syncer-image.tar.gz"
+          ls -lh "$RUNNER_TEMP/syncer-image.tar.gz"
+
+      - name: Upload image artifact
+        if: success() && github.ref == 'refs/heads/main' 
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncer-image
+          path: ${{ runner.temp }}/syncer-image.tar.gz
+          retention-days: 3
+
+  deploy:
+    name: Deploy (pi1)
+    needs: [build, e2e]
+    # Production moves only on main. `master` is a stale fork artifact (a
+    # strict ancestor of main, frozen since 2026-02) and must never deploy.
+    if: ${{ !inputs.skip_deploy && github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, ARM64, pi1]
+    env:
+      SHA_TAG: ${{ needs.build.outputs.sha_tag }}
+      LEGACY_DIR: /home/pi/Devkits/packages/containers/selective-syncer
+      DATA_ROOT: /srv/dev-disk-by-uuid-9241a63c-fa85-40af-aaee-802402dcd4f3/protected/.selective-syncer
+      ARCHIVE: /srv/dev-disk-by-uuid-9241a63c-fa85-40af-aaee-802402dcd4f3/protected/Archive
+      SPACES: /srv/dev-disk-by-uuid-9241a63c-fa85-40af-aaee-802402dcd4f3/protected/Spaces
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: syncer-image
+          path: ${{ runner.temp }}
+
+      - name: Load image
+        run: gunzip -c "$RUNNER_TEMP/syncer-image.tar.gz" | docker load
+
+      - name: Record running image for rollback
+        run: |
+          docker inspect -f '{{.Image}}' selective-syncer 2>/dev/null \
+            > "$RUNNER_TEMP/previous-image" || echo none > "$RUNNER_TEMP/previous-image"
+          cat "$RUNNER_TEMP/previous-image"
+
+      # One-time move of live state off the legacy directory, and off pi1's
+      # root fs which was 82% full. Copy, never move: the legacy tree stays an
+      # untouched fallback until it is retired by hand.
+      - name: Migrate state if not already migrated
+        run: |
+          if [ -d "$DATA_ROOT/database" ]; then
+            echo "state already at $DATA_ROOT - skipping"
+            exit 0
+          fi
+          echo "migrating state from $LEGACY_DIR/data"
+          docker stop selective-syncer 2>/dev/null || true
+          sudo mkdir -p "$DATA_ROOT"
+          sudo cp -a "$LEGACY_DIR/data/config"   "$DATA_ROOT/config"
+          sudo cp -a "$LEGACY_DIR/data/database" "$DATA_ROOT/database"
+          sudo mkdir -p "$DATA_ROOT/log"
+          sudo chown -R 1002:1002 "$DATA_ROOT"
+          sudo du -sh "$DATA_ROOT"/*
+
+      # The new compose reuses container_name selective-syncer, so the legacy
+      # project must release that name before we claim it.
+      # The legacy container must be gone before we claim its name. Assert it
+      # rather than trusting the teardown: compose would otherwise fail on a
+      # name collision, or worse, leave two writers on the same database.
+      - name: Stop the legacy deployment
+        run: |
+          if [ -f "$LEGACY_DIR/docker-compose.yml" ]; then
+            docker compose -f "$LEGACY_DIR/docker-compose.yml" down --remove-orphans || true
+          fi
+          docker rm -f selective-syncer 2>/dev/null || true
+
+          for i in $(seq 1 12); do
+            [ -z "$(docker ps -aq --filter name='^selective-syncer$')" ] && break
+            sleep 5
+          done
+          if [ -n "$(docker ps -aq --filter name='^selective-syncer$')" ]; then
+            echo "::error::legacy container still present; refusing to deploy over it"
+            docker ps -a --filter name='^selective-syncer$' --format '{{.Names}} {{.Status}}'
+            exit 1
+          fi
+          echo "legacy deployment stopped and removed"
+
+      - name: Up
+        working-directory: deploy
+        env:
+          SYNCER_IMAGE: ${{ env.IMAGE }}:${{ needs.build.outputs.sha_tag }}
+          SYNCER_DATA_ROOT: ${{ env.DATA_ROOT }}
+          SYNCER_ARCHIVE: ${{ env.ARCHIVE }}
+          SYNCER_SPACES: ${{ env.SPACES }}
+          # Only consumed if the database is ever recreated (quick setup);
+          # inert on a normal deploy. Set so a rebuild has a known admin
+          # password instead of a randomly generated one.
+          SYNCER_FB_PASSWORD: ${{ secrets.FB_PASSWORD }}
+        run: docker compose -p selective-syncer up -d
+
+      - name: Verify healthy, roll back if not
+        run: |
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' selective-syncer 2>/dev/null)" = healthy ]; then
+              echo "healthy after $((i*10))s"
+              docker ps --filter name=selective-syncer --format '{{.Image}} {{.Status}}'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::deploy unhealthy - rolling back to the legacy deployment"
+          docker logs selective-syncer --tail 200
+          docker compose -p selective-syncer down || true
+          if [ -f "$LEGACY_DIR/docker-compose.yml" ]; then
+            docker compose -f "$LEGACY_DIR/docker-compose.yml" up -d
+          fi
+          exit 1
+

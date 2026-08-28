@@ -12,6 +12,18 @@ import (
 	"github.com/filebrowser/filebrowser/v2/sync/ragflow"
 )
 
+// reconcileInterval is how often the whole tree is re-enqueued to catch drift
+// the watcher missed. A full sweep is not cheap — production walks ~1.2M paths
+// — so this is deliberately infrequent; FB_SYNC_RECONCILE_INTERVAL overrides it.
+var reconcileInterval = func() time.Duration {
+	if v := os.Getenv("FB_SYNC_RECONCILE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return time.Hour
+}()
+
 // Daemon orchestrates the sync process: initial enqueue, watcher, and eval queue worker.
 type Daemon struct {
 	store        *Store
@@ -20,7 +32,6 @@ type Daemon struct {
 	trashRoot    string
 	ignore       *SyncIgnore
 	queue        *EvalQueue
-	pathCache    *PathCache
 	events       *EventBus
 	scanning     atomic.Bool
 	ragflow      *ragflow.Worker // nil if RAGFlow not configured
@@ -37,7 +48,6 @@ func NewDaemon(store *Store, archivesRoot, spacesRoot, configDir string) *Daemon
 		trashRoot:    trashRoot,
 		ignore:       ignore,
 		queue:        NewEvalQueue(),
-		pathCache:    NewPathCache(),
 		events:       NewEventBus(),
 	}
 }
@@ -63,6 +73,8 @@ func (d *Daemon) Run(ctx context.Context) {
 	l := sub("daemon")
 	l.Info("sync daemon starting", "archives", d.archivesRoot, "spaces", d.spacesRoot, "trash", d.trashRoot)
 
+	done := ctx.Done()
+
 	// Start watcher first so we don't miss events during enqueue
 	watcher, err := NewWatcher(d.archivesRoot, d.spacesRoot, d.queue, d.ignore)
 	if err != nil {
@@ -87,9 +99,29 @@ func (d *Daemon) Run(ctx context.Context) {
 		}
 	}()
 
+	// Periodic reconciliation. Without it the catalog is only ever rebuilt at
+	// startup and on watcher overflow, so anything that ends up on disk without
+	// a row — a missed fsnotify event, a delete/recreate that lands in the
+	// wrong order — stays invisible indefinitely: absent from the UI,
+	// unselectable, never synced. Observed in the e2e environment, where a
+	// seeded file sat in Archives with no entry. enqueueAll is already guarded
+	// by d.scanning, so a slow sweep cannot overlap itself.
+	go func() {
+		ticker := time.NewTicker(reconcileInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				l.Info("periodic reconciliation", "interval", reconcileInterval)
+				d.enqueueAll()
+			}
+		}
+	}()
+
 	// Worker loop — process eval queue
 	l.Info("worker loop started")
-	done := ctx.Done()
 	processed := 0
 	lastLog := time.Now()
 	wasProcessing := false
@@ -140,7 +172,7 @@ func (d *Daemon) Run(ctx context.Context) {
 		shouldQueueChildren := d.shouldQueueDescendants(path)
 		pipelineFailed := false
 
-		if err := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err != nil {
+		if err := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, d.ignore, hasQueued); err != nil {
 			if ctx.Err() != nil {
 				l.Info("worker stopping, context cancelled")
 				break
@@ -160,7 +192,7 @@ func (d *Daemon) Run(ctx context.Context) {
 				break
 			}
 
-			if err2 := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, hasQueued); err2 != nil {
+			if err2 := RunPipeline(ctx, path, d.store, d.archivesRoot, d.spacesRoot, d.trashRoot, d.ignore, hasQueued); err2 != nil {
 				if ctx.Err() != nil {
 					l.Info("worker stopping, context cancelled")
 					break
@@ -410,7 +442,6 @@ func (d *Daemon) reconcileChildren(parentIno uint64, parentPath string) {
 		}
 
 		d.queue.Push(relPath)
-		d.pathCache.Set(child.Inode, relPath)
 
 		if child.Type == "dir" {
 			d.reconcileChildren(child.Inode, relPath)
